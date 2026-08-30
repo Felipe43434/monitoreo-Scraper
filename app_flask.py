@@ -240,9 +240,24 @@ HTML_TEMPLATE = """
             50% { opacity: 0.6; }
             100% { opacity: 1; }
         }
+        /* Corrección de superposición en Menús Desplegables */
+        .dropdown {
+            position: relative;
+        }
+        .dropdown-menu {
+            z-index: 1060 !important;
+            background-color: var(--card-bg) !important;
+            color: var(--text-main) !important;
+            border: 1px solid var(--border-color) !important;
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2) !important;
+        }
         .dropdown-menu-scroll {
             max-height: 250px;
             overflow-y: auto;
+        }
+        .card-filter-container {
+            position: relative;
+            z-index: 20;
         }
     </style>
 </head>
@@ -313,7 +328,7 @@ HTML_TEMPLATE = """
         <div class="col-6 col-lg-3">
             <div class="card-custom p-3">
                 <div class="d-flex justify-content-between align-items-center">
-                    <span class="stat-label">Winning Ads (+30d)</span>
+                    <span class="stat-label">Winning Ads (Activos +30d)</span>
                     <i class="bi bi-fire text-danger fs-5"></i>
                 </div>
                 <div class="stat-value text-danger">{{ total_winning }}</div>
@@ -340,7 +355,7 @@ HTML_TEMPLATE = """
     </div>
 
     <!-- Panel de Filtros -->
-    <div class="card-custom p-3 mb-4">
+    <div class="card-custom p-3 mb-4 card-filter-container">
         <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end">
             <div class="col-md-3">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-search"></i> Buscar</label>
@@ -361,7 +376,7 @@ HTML_TEMPLATE = """
                         </span>
                         <i class="bi bi-chevron-down ms-1"></i>
                     </button>
-                    <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow">
+                    <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow-lg">
                         <div class="form-check pb-1 mb-1 border-bottom">
                             <input class="form-check-input" type="checkbox" id="selectAllCompanies" onchange="toggleAllCompanies(this)">
                             <label class="form-check-label small fw-bold" for="selectAllCompanies">Seleccionar / Deseleccionar Todo</label>
@@ -569,13 +584,13 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Panel 3: Winning Ads (Alto Rendimiento) -->
+        <!-- Panel 3: Winning Ads (Solo Activos de Alto Rendimiento) -->
         <div class="tab-pane fade" id="tab-winning">
             <div class="card-custom overflow-hidden">
                 <div class="p-3 bg-danger bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
                     <div>
-                        <h6 class="fw-bold text-danger mb-1"><i class="bi bi-fire"></i> Anuncios de Alto Rendimiento (Longevidad > 30 días)</h6>
-                        <p class="small text-muted mb-0">Estas campañas han superado el mes continuas en circulación, indicando alta rentabilidad.</p>
+                        <h6 class="fw-bold text-danger mb-1"><i class="bi bi-fire"></i> Anuncios de Alto Rendimiento (Activos > 30 días)</h6>
+                        <p class="small text-muted mb-0">Campañas actualmente activas con más de un mes continuo en circulación.</p>
                     </div>
                     <span class="badge bg-danger fs-6">{{ anuncios_winning|length }} detectados</span>
                 </div>
@@ -622,7 +637,7 @@ HTML_TEMPLATE = """
                             {% else %}
                             <tr>
                                 <td colspan="8" class="text-center py-5 text-muted">
-                                    <i class="bi bi-shield-check fs-2 d-block mb-2 text-warning"></i> No hay campañas con más de 30 días activos en los filtros actuales.
+                                    <i class="bi bi-shield-check fs-2 d-block mb-2 text-warning"></i> No hay campañas activas con más de 30 días en los filtros seleccionados.
                                 </td>
                             </tr>
                             {% endfor %}
@@ -764,7 +779,6 @@ HTML_TEMPLATE = """
 
     let timelineChartInstance = null;
 
-    // Inicializar Gráfico de Líneas con Formas Geométricas
     function renderTimeline(labels, datasets) {
         if (!document.getElementById('timelineChart')) return;
         
@@ -804,7 +818,6 @@ HTML_TEMPLATE = """
         });
     }
 
-    // Filtrar Línea de Tiempo (7D, 30D, 1A, Todo)
     function filterTimeline(days, btnElement) {
         if (btnElement) {
             document.querySelectorAll('#timeRangeFilter button').forEach(b => {
@@ -850,10 +863,8 @@ HTML_TEMPLATE = """
         renderTimeline(filteredLabels, filteredDatasets);
     }
 
-    // Ejecutar gráfico al cargar la vista
     filterTimeline(0, null);
 
-    // Gráfico de Dona con Porcentajes
     if (document.getElementById('formatChart')) {
         const totalFmt = formatData.videos + formatData.imagenes + formatData.otros;
         new Chart(document.getElementById('formatChart'), {
@@ -889,7 +900,6 @@ HTML_TEMPLATE = """
         });
     }
 
-    // Gráfico de Palabras Clave
     if (document.getElementById('keywordsChart') && keywordsData.labels && keywordsData.labels.length > 0) {
         new Chart(document.getElementById('keywordsChart'), {
             type: 'bar',
@@ -991,7 +1001,11 @@ def index():
         a['fecha_display'] = fecha_detectada
         dias = calcular_dias_activo(fecha_detectada)
         a['dias_activo'] = dias
-        a['es_winning'] = dias >= DIAS_WINNING_AD and fecha_detectada != 'N/A'
+        
+        # Un Winning Ad debe tener más de 30 días Y estar actualmente ACTIVO
+        estado_ad = str(a.get('estado', '')).strip().lower()
+        a['es_winning'] = (dias >= DIAS_WINNING_AD and fecha_detectada != 'N/A' and estado_ad == 'activo')
+        
         a['plataformas_html'] = render_plataformas_badges(a.get('plataformas'))
         
         if a['es_winning']:
@@ -1013,7 +1027,6 @@ def index():
     pct_imagenes = round((total_fotos / total_anuncios * 100), 1) if total_anuncios > 0 else 0
     pct_otros = round((total_otros / total_anuncios * 100), 1) if total_anuncios > 0 else 0
 
-    # Exclusión de palabras clave y nombres de empresas
     palabras_empresas = set()
     for comp in lista_companias:
         if comp:
@@ -1039,7 +1052,6 @@ def index():
         "values": [p[1] for p in top_palabras]
     }
 
-    # Gráfico de Tendencias cronológico con Formas Geométricas y Colores
     timeline_dict = {}
     for a in anuncios:
         f_norm = parse_date_str(a.get('fecha_display'))
@@ -1168,7 +1180,7 @@ def descargar_excel():
         
         df['fecha_subida_detectada'] = df.apply(lambda row: extraer_fecha_anuncio(row.to_dict()), axis=1)
         df['dias_activo'] = df['fecha_subida_detectada'].apply(calcular_dias_activo)
-        df['es_winning_ad'] = df['dias_activo'] >= DIAS_WINNING_AD
+        df['es_winning_ad'] = df.apply(lambda r: (r['dias_activo'] >= DIAS_WINNING_AD and str(r.get('estado', '')).strip().lower() == 'activo'), axis=1)
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
