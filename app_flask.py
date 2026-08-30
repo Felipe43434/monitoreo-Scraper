@@ -21,7 +21,6 @@ WORKFLOW_FILE = "scraper.yml"
 
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "UnaClaveMuySegura2026")
 
-# Umbral en días para considerar un anuncio como "Winning Ad"
 DIAS_WINNING_AD = 30
 
 MESES_DICT = {
@@ -32,7 +31,6 @@ MESES_DICT = {
     'jan': '01', 'apr': '04', 'aug': '08', 'dec': '12'
 }
 
-# Palabras comunes a ignorar en el análisis de términos
 STOPWORDS_ES = {
     'de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 
     'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'sí', 
@@ -43,7 +41,6 @@ STOPWORDS_ES = {
     'quienes', 'nada', 'muchos', 'cual', 'sea', 'poco', 'ella', 'estar', 'estas', 'estás', 'algunas', 'algo', 
     'nosotros', 'mi', 'mis', 'tu', 'tus', 'te', 'ti', 'aquí', 'solo', 'cada', 'ahora', 'mas', 'si',
     'http', 'https', 'com', 'www', 'meta', 'ads', 'click', 'link',
-    # Filtros personalizados
     'fina', 'orden', 'venezuela', 'andrea'
 }
 
@@ -64,10 +61,17 @@ def get_db_connection():
         url = f"{url}{sep}sslmode=require"
     return psycopg2.connect(url)
 
-def parse_date_str(val, fallback_val=None):
-    if not val and fallback_val:
-        val = fallback_val
-    if not val:
+def extraer_fecha_anuncio(ad):
+    """Busca el valor de fecha en cualquiera de las columnas posibles de Neon."""
+    posibles_claves = ['fecha_inicio', 'fecha', 'fecha_publicacion', 'fecha_comienzo', 'start_date', 'fecha_registro', 'created_at']
+    for clave in posibles_claves:
+        val = ad.get(clave)
+        if val and str(val).strip() and str(val).strip().lower() not in ['none', 'null', 'n/a', '']:
+            return str(val).strip()
+    return 'N/A'
+
+def parse_date_str(val):
+    if not val or str(val).strip().lower() in ['none', 'null', 'n/a', '']:
         return None
     s = str(val).lower().strip()
 
@@ -89,8 +93,8 @@ def parse_date_str(val, fallback_val=None):
 
     return s[:10] if len(s) >= 10 else None
 
-def calcular_dias_activo(fecha_inicio_str, fallback_str=None):
-    f_norm = parse_date_str(fecha_inicio_str, fallback_str)
+def calcular_dias_activo(fecha_val):
+    f_norm = parse_date_str(fecha_val)
     if not f_norm:
         return 0
     try:
@@ -500,7 +504,7 @@ HTML_TEMPLATE = """
                                         {{ ad.dias_activo }} días
                                     </span>
                                 </td>
-                                <td class="small">{{ ad.fecha_inicio or 'N/A' }}</td>
+                                <td class="small fw-semibold">{{ ad.fecha_display }}</td>
                                 <td>
                                     {% if ad.link_individual %}
                                     <a href="{{ ad.link_individual }}" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem;">
@@ -563,7 +567,7 @@ HTML_TEMPLATE = """
                                     {{ (ad.texto or ad.titulo or 'Sin descripción')[:140] }}
                                 </td>
                                 <td><span class="badge bg-danger-subtle text-danger fw-bold">{{ ad.dias_activo }} días</span></td>
-                                <td class="small">{{ ad.fecha_inicio or 'N/A' }}</td>
+                                <td class="small fw-semibold">{{ ad.fecha_display }}</td>
                                 <td>
                                     {% if ad.link_individual %}
                                     <a href="{{ ad.link_individual }}" target="_blank" class="btn btn-sm btn-primary py-0 px-2" style="font-size: 0.75rem;">
@@ -615,7 +619,7 @@ HTML_TEMPLATE = """
                                 <td class="small text-muted" style="max-width: 320px;">
                                     {{ (ad.texto or ad.titulo or 'Sin descripción')[:140] }}
                                 </td>
-                                <td class="small">{{ ad.fecha_inicio or 'N/A' }}</td>
+                                <td class="small fw-semibold">{{ ad.fecha_display }}</td>
                                 <td>
                                     {% if ad.link_individual %}
                                     <a href="{{ ad.link_individual }}" target="_blank" class="btn btn-sm btn-primary py-0 px-2" style="font-size: 0.75rem;">
@@ -832,7 +836,6 @@ def index():
     conn = get_db_connection()
     anuncios = []
     lista_companias = []
-    anuncios_nuevos = []
 
     if conn:
         try:
@@ -860,24 +863,29 @@ def index():
                 query += " ORDER BY id DESC LIMIT 1000"
                 cur.execute(query, tuple(params))
                 anuncios = cur.fetchall()
-
-                limite_reciente = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
-                cur.execute("SELECT * FROM anuncios WHERE (fecha_inicio >= %s OR fecha_registro >= %s) ORDER BY id DESC LIMIT 100", (limite_reciente, limite_reciente))
-                anuncios_nuevos = cur.fetchall()
         except Exception as e:
             print(f"Error consultando BD: {e}")
             anuncios = []
         finally:
             conn.close()
 
-    # Cálculo de Días Activos y Winning Ads (+30 días)
+    # Procesar fecha de cada anuncio de forma unificada
     anuncios_winning = []
+    anuncios_nuevos = []
+
     for a in anuncios:
-        dias = calcular_dias_activo(a.get('fecha_inicio'), a.get('fecha_registro'))
+        fecha_detectada = extraer_fecha_anuncio(a)
+        a['fecha_display'] = fecha_detectada
+        dias = calcular_dias_activo(fecha_detectada)
         a['dias_activo'] = dias
         a['es_winning'] = dias >= DIAS_WINNING_AD
+        
         if a['es_winning']:
             anuncios_winning.append(a)
+            
+        # Detectar nuevos si tiene 2 días o menos de antigüedad
+        if dias <= 2 and fecha_detectada != 'N/A':
+            anuncios_nuevos.append(a)
 
     total_anuncios = len(anuncios)
     companias_set = {a['compania'] for a in anuncios if a.get('compania')}
@@ -921,7 +929,7 @@ def index():
     # Gráfico de Tendencias
     timeline_dict = {}
     for a in anuncios:
-        f_norm = parse_date_str(a.get('fecha_inicio'), a.get('fecha_registro'))
+        f_norm = parse_date_str(a.get('fecha_display'))
         if f_norm:
             comp = a.get('compania', 'Otras')
             if f_norm not in timeline_dict:
@@ -1015,7 +1023,7 @@ def descargar_excel():
         estado = request.args.get('estado', '').strip()
         formato = request.args.get('formato', '').strip()
 
-        query = "SELECT compania, estado, formato, texto, titulo, link_individual, fecha_inicio, fecha_registro FROM anuncios WHERE 1=1"
+        query = "SELECT * FROM anuncios WHERE 1=1"
         params = []
 
         if q:
@@ -1036,7 +1044,9 @@ def descargar_excel():
 
         df = pd.read_sql_query(query, conn, params=params)
         
-        df['dias_activo'] = df.apply(lambda row: calcular_dias_activo(row.get('fecha_inicio'), row.get('fecha_registro')), axis=1)
+        # Asignar fecha detectada y métricas de longevidad en Excel
+        df['fecha_inicio_detectada'] = df.apply(lambda row: extraer_fecha_anuncio(row.to_dict()), axis=1)
+        df['dias_activo'] = df['fecha_inicio_detectada'].apply(calcular_dias_activo)
         df['es_winning_ad'] = df['dias_activo'] >= DIAS_WINNING_AD
 
         output = io.BytesIO()
