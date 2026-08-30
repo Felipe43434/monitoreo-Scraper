@@ -1,0 +1,33 @@
+name: Ejecutar Scraper de Meta Ads
+
+on:
+  workflow_dispatch:
+    inputs:
+      dias:
+        description: 'Días de historial a rastrear'
+        required: true
+        default: '30'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Ejecutar script de extracción
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python monitoreo_meta.py ${{ github.event.inputs.dias }}
