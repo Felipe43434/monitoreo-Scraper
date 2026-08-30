@@ -447,7 +447,16 @@ HTML_TEMPLATE = """
             <div class="row g-3">
                 <div class="col-lg-8">
                     <div class="card-custom p-3 h-100">
-                        <h6 class="fw-bold mb-3"><i class="bi bi-graph-up"></i> Publicación de Anuncios por Empresa</h6>
+                        <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                            <h6 class="fw-bold m-0"><i class="bi bi-graph-up"></i> Publicación de Anuncios por Empresa</h6>
+                            <!-- Selector de Rango Temporal -->
+                            <div class="btn-group btn-group-sm" role="group" id="timeRangeFilter">
+                                <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(7, this)">7D</button>
+                                <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(30, this)">30D</button>
+                                <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(365, this)">1A</button>
+                                <button type="button" class="btn btn-primary active" onclick="filterTimeline(0, this)">Todo</button>
+                            </div>
+                        </div>
                         <div style="height: 330px; position: relative;">
                             <canvas id="timelineChart"></canvas>
                         </div>
@@ -749,14 +758,21 @@ HTML_TEMPLATE = """
     }
     updateThemeUI(getTheme());
 
-    const timelineData = {{ timeline_data|tojson }};
+    const rawTimelineData = {{ timeline_data|tojson }};
     const formatData = {{ format_data|tojson }};
     const keywordsData = {{ keywords_chart_data|tojson }};
 
-    if (document.getElementById('timelineChart')) {
-        const labels = timelineData.labels || [];
-        const datasets = timelineData.datasets || [];
-        new Chart(document.getElementById('timelineChart'), {
+    let timelineChartInstance = null;
+
+    // Inicializar Gráfico de Líneas con Formas Geométricas
+    function renderTimeline(labels, datasets) {
+        if (!document.getElementById('timelineChart')) return;
+        
+        if (timelineChartInstance) {
+            timelineChartInstance.destroy();
+        }
+
+        timelineChartInstance = new Chart(document.getElementById('timelineChart'), {
             type: 'line',
             data: {
                 labels: labels.length > 0 ? labels : ['Sin fechas registradas'],
@@ -771,7 +787,14 @@ HTML_TEMPLATE = """
                 maintainAspectRatio: false,
                 interaction: { mode: 'index', intersect: false },
                 plugins: {
-                    legend: { position: 'bottom', labels: { boxWidth: 12, usePointStyle: true } }
+                    legend: { 
+                        position: 'bottom', 
+                        labels: { 
+                            boxWidth: 12, 
+                            usePointStyle: true,
+                            padding: 15
+                        } 
+                    }
                 },
                 scales: {
                     y: { beginAtZero: true, ticks: { precision: 0 } },
@@ -781,6 +804,56 @@ HTML_TEMPLATE = """
         });
     }
 
+    // Filtrar Línea de Tiempo (7D, 30D, 1A, Todo)
+    function filterTimeline(days, btnElement) {
+        if (btnElement) {
+            document.querySelectorAll('#timeRangeFilter button').forEach(b => {
+                b.classList.remove('btn-primary', 'active');
+                b.classList.add('btn-outline-secondary');
+            });
+            btnElement.classList.remove('btn-outline-secondary');
+            btnElement.classList.add('btn-primary', 'active');
+        }
+
+        if (!rawTimelineData.labels || rawTimelineData.labels.length === 0) {
+            renderTimeline([], []);
+            return;
+        }
+
+        if (days === 0) {
+            renderTimeline(rawTimelineData.labels, rawTimelineData.datasets);
+            return;
+        }
+
+        const now = new Date();
+        const cutoff = new Date();
+        cutoff.setDate(now.getDate() - days);
+        const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+        const filteredIndices = [];
+        const filteredLabels = [];
+
+        rawTimelineData.labels.forEach((label, idx) => {
+            if (label >= cutoffStr) {
+                filteredIndices.push(idx);
+                filteredLabels.push(label);
+            }
+        });
+
+        const filteredDatasets = rawTimelineData.datasets.map(ds => {
+            return {
+                ...ds,
+                data: filteredIndices.map(i => ds.data[i])
+            };
+        });
+
+        renderTimeline(filteredLabels, filteredDatasets);
+    }
+
+    // Ejecutar gráfico al cargar la vista
+    filterTimeline(0, null);
+
+    // Gráfico de Dona con Porcentajes
     if (document.getElementById('formatChart')) {
         const totalFmt = formatData.videos + formatData.imagenes + formatData.otros;
         new Chart(document.getElementById('formatChart'), {
@@ -816,6 +889,7 @@ HTML_TEMPLATE = """
         });
     }
 
+    // Gráfico de Palabras Clave
     if (document.getElementById('keywordsChart') && keywordsData.labels && keywordsData.labels.length > 0) {
         new Chart(document.getElementById('keywordsChart'), {
             type: 'bar',
@@ -965,7 +1039,7 @@ def index():
         "values": [p[1] for p in top_palabras]
     }
 
-    # Gráfico de Tendencias cronológico basado en fecha_subida
+    # Gráfico de Tendencias cronológico con Formas Geométricas y Colores
     timeline_dict = {}
     for a in anuncios:
         f_norm = parse_date_str(a.get('fecha_display'))
@@ -976,19 +1050,24 @@ def index():
             timeline_dict[f_norm][comp] = timeline_dict[f_norm].get(comp, 0) + 1
 
     sorted_dates = sorted(timeline_dict.keys())
-    top_companias = list(companias_set)[:6]
-    palette = ['#0284c7', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899']
+    top_companias = list(companias_set)[:7]
+    palette = ['#0284c7', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4']
+    shapes = ['circle', 'triangle', 'rect', 'rectRot', 'star', 'cross', 'crossRot']
 
     datasets = []
     for idx, comp in enumerate(top_companias):
         data = [timeline_dict[d].get(comp, 0) for d in sorted_dates]
+        color = palette[idx % len(palette)]
+        shape = shapes[idx % len(shapes)]
         datasets.append({
             "label": comp,
             "data": data,
-            "borderColor": palette[idx % len(palette)],
-            "backgroundColor": palette[idx % len(palette)],
-            "tension": 0.25,
-            "pointRadius": 3
+            "borderColor": color,
+            "backgroundColor": color,
+            "pointStyle": shape,
+            "pointRadius": 6,
+            "pointHoverRadius": 8,
+            "tension": 0.25
         })
 
     timeline_data = {"labels": sorted_dates, "datasets": datasets}
