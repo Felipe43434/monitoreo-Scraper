@@ -258,6 +258,15 @@ HTML_TEMPLATE = """
             position: relative;
             z-index: 20;
         }
+        .sync-container {
+            min-width: 210px;
+        }
+        .progress-inline {
+            height: 4px;
+            border-radius: 2px;
+            overflow: hidden;
+            background-color: rgba(255, 255, 255, 0.15);
+        }
     </style>
 </head>
 <body>
@@ -269,19 +278,34 @@ HTML_TEMPLATE = """
             <span class="fw-bold tracking-tight">Meta Ads Intelligence</span>
         </a>
         <div class="d-flex align-items-center gap-2 ms-auto">
-            <form action="/lanzar_scraper" method="POST" class="d-flex align-items-center gap-2 m-0">
-                <select name="dias_scraping" class="form-select form-select-sm bg-dark text-light border-secondary">
-                    <option value="7">7 días</option>
-                    <option value="15">15 días</option>
-                    <option value="30" selected>30 días</option>
-                    <option value="60">60 días</option>
-                </select>
-                <button type="submit" class="btn btn-sm btn-primary text-nowrap d-flex align-items-center gap-1">
-                    <i class="bi bi-arrow-repeat"></i> Sincronizar
-                </button>
-            </form>
+            
+            <!-- Recuadro de Sincronización con Barra de Progreso Integrada Debajo -->
+            <div class="sync-container d-flex flex-column gap-1">
+                <form action="/lanzar_scraper" method="POST" id="scraperForm" onsubmit="startInlineScraping(event)" class="d-flex align-items-center gap-2 m-0">
+                    <select name="dias_scraping" id="selectDiasScraping" class="form-select form-select-sm bg-dark text-light border-secondary" style="width: 95px;">
+                        <option value="7">7 días</option>
+                        <option value="15">15 días</option>
+                        <option value="30" selected>30 días</option>
+                        <option value="60">60 días</option>
+                    </select>
+                    <button type="submit" id="btnSyncScraper" class="btn btn-sm btn-primary text-nowrap d-flex align-items-center gap-1">
+                        <i class="bi bi-arrow-repeat" id="syncIcon"></i> <span id="syncText">Sincronizar</span>
+                    </button>
+                </form>
 
-            <div class="dropdown">
+                <!-- Barra de Progreso Debajo del Recuadro -->
+                <div id="inlineProgressWrapper" class="d-none">
+                    <div class="progress progress-inline">
+                        <div id="inlineProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" style="width: 0%;"></div>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center mt-1">
+                        <span id="inlineProgressStatus" class="text-info" style="font-size: 0.68rem;">Conectando...</span>
+                        <span id="inlineProgressPct" class="text-secondary" style="font-size: 0.68rem;">0%</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dropdown ms-1">
                 <button class="btn btn-sm btn-outline-secondary dropdown-toggle text-light border-0" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="Configuración">
                     <i class="bi bi-gear-fill fs-5"></i>
                 </button>
@@ -781,6 +805,49 @@ HTML_TEMPLATE = """
     }
     updateThemeUI(getTheme());
 
+    // Barra de Progreso Integrada Debajo del Recuadro de Sincronización
+    function startInlineScraping(event) {
+        event.preventDefault();
+        
+        const btn = document.getElementById('btnSyncScraper');
+        const icon = document.getElementById('syncIcon');
+        const select = document.getElementById('selectDiasScraping');
+        const wrapper = document.getElementById('inlineProgressWrapper');
+        const bar = document.getElementById('inlineProgressBar');
+        const status = document.getElementById('inlineProgressStatus');
+        const pctText = document.getElementById('inlineProgressPct');
+
+        btn.disabled = true;
+        select.disabled = true;
+        icon.classList.add('spinner-border', 'spinner-border-sm', 'border-0');
+        wrapper.classList.remove('d-none');
+
+        let pct = 10;
+        const interval = setInterval(() => {
+            if (pct < 90) {
+                pct += Math.floor(Math.random() * 12) + 5;
+                if (pct > 90) pct = 90;
+                bar.style.width = pct + '%';
+                pctText.innerText = pct + '%';
+
+                if (pct > 25 && pct <= 55) {
+                    status.innerText = 'Conectando con GitHub...';
+                } else if (pct > 55) {
+                    status.innerText = 'Iniciando scraping...';
+                }
+            }
+        }, 250);
+
+        setTimeout(() => {
+            clearInterval(interval);
+            bar.style.width = '100%';
+            pctText.innerText = '100%';
+            status.innerText = '¡Enviado a procesar!';
+            select.disabled = false;
+            document.getElementById('scraperForm').submit();
+        }, 1800);
+    }
+
     const rawTimelineData = {{ timeline_data|tojson }};
     const formatData = {{ format_data|tojson }};
     const keywordsData = {{ keywords_chart_data|tojson }};
@@ -1010,7 +1077,6 @@ def index():
         dias = calcular_dias_activo(fecha_detectada)
         a['dias_activo'] = dias
         
-        # Un Winning Ad debe tener más de 30 días Y estar actualmente ACTIVO
         estado_ad = str(a.get('estado', '')).strip().lower()
         a['es_winning'] = (dias >= DIAS_WINNING_AD and fecha_detectada != 'N/A' and estado_ad == 'activo')
         
