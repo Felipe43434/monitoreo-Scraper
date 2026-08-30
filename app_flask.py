@@ -61,8 +61,38 @@ def get_db_connection():
         url = f"{url}{sep}sslmode=require"
     return psycopg2.connect(url)
 
+def init_config_tables():
+    """Crea las tablas de configuración y bloqueo si no existen en Neon."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS companias_bloqueadas (
+                        id SERIAL PRIMARY KEY,
+                        compania VARCHAR(255) UNIQUE NOT NULL,
+                        fecha_bloqueo TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS config_urls (
+                        id SERIAL PRIMARY KEY,
+                        nombre VARCHAR(255) NOT NULL,
+                        url TEXT NOT NULL,
+                        activo BOOLEAN DEFAULT TRUE,
+                        fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                conn.commit()
+        except Exception as e:
+            print(f"Error inicializando tablas: {e}")
+        finally:
+            conn.close()
+
+# Inicializar tablas al arrancar Flask
+init_config_tables()
+
 def extraer_fecha_anuncio(ad):
-    """Prioriza la columna 'fecha_subida' de Neon."""
     posibles_claves = ['fecha_subida', 'fecha_inicio', 'fecha', 'fecha_publicacion', 'fecha_comienzo', 'start_date']
     for clave in posibles_claves:
         val = ad.get(clave)
@@ -240,9 +270,7 @@ HTML_TEMPLATE = """
             50% { opacity: 0.6; }
             100% { opacity: 1; }
         }
-        .dropdown {
-            position: relative;
-        }
+        .dropdown { position: relative; }
         .dropdown-menu {
             z-index: 1060 !important;
             background-color: var(--card-bg) !important;
@@ -250,17 +278,9 @@ HTML_TEMPLATE = """
             border: 1px solid var(--border-color) !important;
             box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2) !important;
         }
-        .dropdown-menu-scroll {
-            max-height: 250px;
-            overflow-y: auto;
-        }
-        .card-filter-container {
-            position: relative;
-            z-index: 20;
-        }
-        .sync-container {
-            min-width: 230px;
-        }
+        .dropdown-menu-scroll { max-height: 250px; overflow-y: auto; }
+        .card-filter-container { position: relative; z-index: 20; }
+        .sync-container { min-width: 230px; }
         .progress-inline {
             height: 5px;
             border-radius: 3px;
@@ -279,8 +299,18 @@ HTML_TEMPLATE = """
         </a>
         <div class="d-flex align-items-center gap-2 ms-auto">
             
+            <!-- Botón Gestionar URLs -->
+            <button class="btn btn-sm btn-outline-light d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalConfigUrls">
+                <i class="bi bi-link-45deg fs-6"></i> URLs de Búsqueda
+            </button>
+
+            <!-- Botón Compañías Bloqueadas -->
+            <button class="btn btn-sm btn-outline-danger d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalBlockedCompanies">
+                <i class="bi bi-slash-circle"></i> Bloqueadas ({{ companias_bloqueadas|length }})
+            </button>
+
             <!-- Sincronizador con Barra de Progreso y Tiempo Restante -->
-            <div class="sync-container d-flex flex-column gap-1">
+            <div class="sync-container d-flex flex-column gap-1 ms-1">
                 <form action="/lanzar_scraper" method="POST" id="scraperForm" onsubmit="startInlineScraping(event)" class="d-flex align-items-center gap-2 m-0">
                     <select name="dias_scraping" id="selectDiasScraping" class="form-select form-select-sm bg-dark text-light border-secondary" style="width: 100px;">
                         <option value="7">7 días</option>
@@ -293,7 +323,6 @@ HTML_TEMPLATE = """
                     </button>
                 </form>
 
-                <!-- Barra de Progreso y Cuenta Regresiva de Tiempo -->
                 <div id="inlineProgressWrapper" class="d-none">
                     <div class="progress progress-inline">
                         <div id="inlineProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" style="width: 0%;"></div>
@@ -327,6 +356,114 @@ HTML_TEMPLATE = """
         </div>
     </div>
 </nav>
+
+<!-- Modal: URLs de Búsqueda -->
+<div class="modal fade" id="modalConfigUrls" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content card-custom">
+            <div class="modal-header border-secondary border-opacity-25">
+                <h5 class="modal-title fw-bold"><i class="bi bi-link-45deg text-primary"></i> Configurar URLs de Búsqueda</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-4">
+                <!-- Formulario Agregar URL -->
+                <form action="/guardar_url" method="POST" class="card-custom p-3 mb-4 bg-body-tertiary">
+                    <h6 class="fw-bold mb-2 small text-uppercase text-muted">Añadir Nueva URL de Meta Ads Library</h6>
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <input type="text" name="nombre" class="form-control form-control-sm" placeholder="Nombre / Nicho (ej: Software ERP)" required>
+                        </div>
+                        <div class="col-md-6">
+                            <input type="url" name="url" class="form-control form-control-sm" placeholder="https://www.facebook.com/ads/library/?..." required>
+                        </div>
+                        <div class="col-md-2">
+                            <button type="submit" class="btn btn-sm btn-primary w-100"><i class="bi bi-plus-lg"></i> Guardar</button>
+                        </div>
+                    </div>
+                </form>
+
+                <!-- Listado de URLs Guardadas -->
+                <h6 class="fw-bold mb-2 small text-uppercase text-muted">URLs Registradas ({{ config_urls|length }})</h6>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr class="small text-muted">
+                                <th>Nombre / Nicho</th>
+                                <th>URL de Búsqueda</th>
+                                <th class="text-end">Acción</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for u in config_urls %}
+                            <tr>
+                                <td class="fw-bold">{{ u.nombre }}</td>
+                                <td class="small text-truncate" style="max-width: 340px;">
+                                    <a href="{{ u.url }}" target="_blank" class="text-decoration-none text-info">{{ u.url }}</a>
+                                </td>
+                                <td class="text-end">
+                                    <form action="/eliminar_url/{{ u.id }}" method="POST" class="d-inline" onsubmit="return confirm('¿Eliminar esta URL de búsqueda?');">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Eliminar URL">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="3" class="text-center py-4 text-muted small">No has registrado URLs personalizadas todavía.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Gestión de Compañías Bloqueadas -->
+<div class="modal fade" id="modalBlockedCompanies" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content card-custom">
+            <div class="modal-header border-secondary border-opacity-25">
+                <h5 class="modal-title fw-bold text-danger"><i class="bi bi-slash-circle"></i> Compañías Bloqueadas</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-4">
+                <p class="small text-muted mb-3">Las compañías bloqueadas no aparecerán en las gráficas, métricas ni listados de anuncios.</p>
+                <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
+                    <table class="table table-sm table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr class="small text-muted">
+                                <th>Compañía</th>
+                                <th class="text-end">Desbloquear</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for b in companias_bloqueadas %}
+                            <tr>
+                                <td class="fw-bold text-danger">{{ b }}</td>
+                                <td class="text-end">
+                                    <form action="/desbloquear_compania" method="POST" class="d-inline">
+                                        <input type="hidden" name="compania" value="{{ b }}">
+                                        <button type="submit" class="btn btn-sm btn-outline-success py-0 px-2">
+                                            <i class="bi bi-unlock"></i> Desbloquear
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="2" class="text-center py-4 text-muted small">No hay ninguna compañía bloqueada actualmente.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <div class="container-fluid px-4 py-4">
 
@@ -554,7 +691,19 @@ HTML_TEMPLATE = """
                         <tbody>
                             {% for ad in anuncios %}
                             <tr>
-                                <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
+                                <td>
+                                    <div class="d-flex align-items-center gap-1">
+                                        <span class="fw-bold">{{ ad.compania or 'N/A' }}</span>
+                                        {% if ad.compania %}
+                                        <form action="/bloquear_compania" method="POST" class="d-inline" onsubmit="return confirm('¿Bloquear la compañía {{ ad.compania }} del dashboard?');">
+                                            <input type="hidden" name="compania" value="{{ ad.compania }}">
+                                            <button type="submit" class="btn btn-link text-danger p-0 border-0 ms-1" title="Bloquear esta compañía">
+                                                <i class="bi bi-slash-circle" style="font-size: 0.8rem;"></i>
+                                            </button>
+                                        </form>
+                                        {% endif %}
+                                    </div>
+                                </td>
                                 <td>
                                     <div class="d-flex flex-wrap gap-1">
                                         <span class="badge {% if ad.estado == 'Activo' %}badge-active{% else %}badge-inactive{% endif %}">
@@ -1081,15 +1230,36 @@ def index():
     conn = get_db_connection()
     anuncios = []
     lista_companias = []
+    companias_bloqueadas = []
+    config_urls = []
 
     if conn:
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT DISTINCT compania FROM anuncios WHERE compania IS NOT NULL AND compania != '' ORDER BY compania ASC")
+                # Obtener compañías bloqueadas
+                cur.execute("SELECT compania FROM companias_bloqueadas ORDER BY compania ASC")
+                companias_bloqueadas = [r['compania'] for r in cur.fetchall()]
+
+                # Obtener URLs de búsqueda
+                cur.execute("SELECT * FROM config_urls ORDER BY id DESC")
+                config_urls = cur.fetchall()
+
+                # Lista de compañías disponibles (excluyendo bloqueadas)
+                cur.execute("""
+                    SELECT DISTINCT compania FROM anuncios 
+                    WHERE compania IS NOT NULL AND compania != '' 
+                    AND compania != ALL(%s) 
+                    ORDER BY compania ASC
+                """, (companias_bloqueadas,))
                 lista_companias = [r['compania'] for r in cur.fetchall()]
 
+                # Consulta principal
                 query = "SELECT * FROM anuncios WHERE 1=1"
                 params = []
+
+                if companias_bloqueadas:
+                    query += " AND compania != ALL(%s)"
+                    params.append(companias_bloqueadas)
 
                 if q:
                     query += " AND (texto ILIKE %s OR titulo ILIKE %s OR link_individual ILIKE %s)"
@@ -1221,6 +1391,8 @@ def index():
         anuncios_winning=anuncios_winning,
         anuncios_nuevos=anuncios_nuevos,
         lista_companias=lista_companias,
+        companias_bloqueadas=companias_bloqueadas,
+        config_urls=config_urls,
         companias_sel=companias_sel,
         total_anuncios=total_anuncios,
         total_companias=total_companias,
@@ -1234,6 +1406,73 @@ def index():
         format_data=format_data,
         msg=msg
     )
+
+@app.route('/guardar_url', methods=['POST'])
+@login_required
+def guardar_url():
+    nombre = request.form.get('nombre', '').strip()
+    url = request.form.get('url', '').strip()
+    if nombre and url:
+        conn = get_db_connection()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("INSERT INTO config_urls (nombre, url) VALUES (%s, %s)", (nombre, url))
+                    conn.commit()
+            except Exception as e:
+                print(f"Error guardando URL: {e}")
+            finally:
+                conn.close()
+    return redirect(url_for('index', msg="✅ URL de búsqueda guardada correctamente."))
+
+@app.route('/eliminar_url/<int:url_id>', methods=['POST'])
+@login_required
+def eliminar_url(url_id):
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM config_urls WHERE id = %s", (url_id,))
+                conn.commit()
+        except Exception as e:
+            print(f"Error eliminando URL: {e}")
+        finally:
+            conn.close()
+    return redirect(url_for('index', msg="🗑️ URL de búsqueda eliminada."))
+
+@app.route('/bloquear_compania', methods=['POST'])
+@login_required
+def bloquear_compania():
+    comp = request.form.get('compania', '').strip()
+    if comp:
+        conn = get_db_connection()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("INSERT INTO companias_bloqueadas (compania) VALUES (%s) ON CONFLICT DO NOTHING", (comp,))
+                    conn.commit()
+            except Exception as e:
+                print(f"Error bloqueando compañía: {e}")
+            finally:
+                conn.close()
+    return redirect(url_for('index', msg=f"🚫 Compañía '{comp}' bloqueada del panel."))
+
+@app.route('/desbloquear_compania', methods=['POST'])
+@login_required
+def desbloquear_compania():
+    comp = request.form.get('compania', '').strip()
+    if comp:
+        conn = get_db_connection()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM companias_bloqueadas WHERE compania = %s", (comp,))
+                    conn.commit()
+            except Exception as e:
+                print(f"Error desbloqueando compañía: {e}")
+            finally:
+                conn.close()
+    return redirect(url_for('index', msg=f"✅ Compañía '{comp}' desbloqueada exitosamente."))
 
 @app.route('/lanzar_scraper', methods=['POST'])
 @login_required
@@ -1277,8 +1516,17 @@ def descargar_excel():
         formato = request.args.get('formato', '').strip()
         plataforma = request.args.get('plataforma', '').strip()
 
+        # Obtener bloqueadas
+        with conn.cursor() as cur:
+            cur.execute("SELECT compania FROM companias_bloqueadas")
+            companias_bloqueadas = [r[0] for r in cur.fetchall()]
+
         query = "SELECT * FROM anuncios WHERE 1=1"
         params = []
+
+        if companias_bloqueadas:
+            query += " AND compania != ALL(%s)"
+            params.append(companias_bloqueadas)
 
         if q:
             query += " AND (texto ILIKE %s OR titulo ILIKE %s OR link_individual ILIKE %s)"
