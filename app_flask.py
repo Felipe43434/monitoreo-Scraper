@@ -63,7 +63,6 @@ def get_db_connection():
     return psycopg2.connect(url)
 
 def init_config_tables():
-    """Crea la tabla de compañías bloqueadas en Neon si no existe."""
     conn = get_db_connection()
     if conn:
         try:
@@ -84,7 +83,6 @@ def init_config_tables():
 init_config_tables()
 
 def get_github_urls_file():
-    """Descarga y decodifica urls.txt desde el repositorio de GitHub."""
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return "", None
     url_api = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{URLS_FILE_PATH}"
@@ -104,7 +102,6 @@ def get_github_urls_file():
         return "", None
 
 def update_github_urls_file(new_content, commit_message="Actualizar urls.txt desde Dashboard"):
-    """Guarda y commitea el nuevo contenido de urls.txt en GitHub."""
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return False, "Falta configurar GITHUB_TOKEN o GITHUB_REPO."
     
@@ -133,7 +130,6 @@ def update_github_urls_file(new_content, commit_message="Actualizar urls.txt des
         return False, f"Error conectando con GitHub: {e}"
 
 def parse_urls_txt(raw_text):
-    """Parsea el texto con formato: Nombre de la empresa | URL"""
     items = []
     if not raw_text:
         return items
@@ -329,7 +325,6 @@ HTML_TEMPLATE = """
             50% { opacity: 0.6; }
             100% { opacity: 1; }
         }
-        /* Corrección definitiva de colores y tema para el menú desplegable */
         .card-filter-container {
             position: relative;
             z-index: 50;
@@ -346,13 +341,6 @@ HTML_TEMPLATE = """
             color: var(--text-main) !important;
             border: 1px solid var(--border-color) !important;
             box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3) !important;
-        }
-        .dropdown-item {
-            color: var(--text-main) !important;
-        }
-        .dropdown-item:hover {
-            background-color: rgba(100, 116, 139, 0.15) !important;
-            color: var(--text-main) !important;
         }
         .dropdown-menu-scroll { max-height: 250px; overflow-y: auto; }
         .sync-container { min-width: 230px; }
@@ -589,7 +577,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Panel de Filtros -->
+    <!-- Panel de Filtros (Con el botón de compañías estilizado idéntico a form-select) -->
     <div class="card-custom p-3 mb-4 card-filter-container">
         <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end">
             <!-- 1. Buscar -->
@@ -598,11 +586,11 @@ HTML_TEMPLATE = """
                 <input type="text" name="q" class="form-control form-control-sm" placeholder="Texto, link..." value="{{ request.args.get('q', '') }}">
             </div>
 
-            <!-- 2. Selección Múltiple Compañías -->
+            <!-- 2. Selección Múltiple Compañías (Estilizado como form-select form-select-sm) -->
             <div class="col-md-4 col-lg-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-building"></i> Compañías ({% if companias_sel %}{{ companias_sel|length }}{% else %}Todas{% endif %})</label>
                 <div class="dropdown">
-                    <button class="btn btn-sm btn-outline-secondary w-100 text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                    <button class="form-select form-select-sm text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
                         <span class="text-truncate">
                             {% if companias_sel %}
                                 {{ companias_sel|join(', ') }}
@@ -610,7 +598,6 @@ HTML_TEMPLATE = """
                                 Todas ({{ lista_companias|length }})
                             {% endif %}
                         </span>
-                        <i class="bi bi-chevron-down ms-1"></i>
                     </button>
                     <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow-lg">
                         <div class="form-check pb-1 mb-1 border-bottom">
