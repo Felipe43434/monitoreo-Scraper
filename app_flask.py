@@ -62,8 +62,8 @@ def get_db_connection():
     return psycopg2.connect(url)
 
 def extraer_fecha_anuncio(ad):
-    """Busca el valor de fecha en cualquiera de las columnas posibles de Neon."""
-    posibles_claves = ['fecha_inicio', 'fecha', 'fecha_publicacion', 'fecha_comienzo', 'start_date', 'fecha_registro', 'created_at']
+    """Prioriza la columna 'fecha_subida' de Neon."""
+    posibles_claves = ['fecha_subida', 'fecha_inicio', 'fecha', 'fecha_publicacion', 'fecha_comienzo', 'start_date']
     for clave in posibles_claves:
         val = ad.get(clave)
         if val and str(val).strip() and str(val).strip().lower() not in ['none', 'null', 'n/a', '']:
@@ -103,6 +103,24 @@ def calcular_dias_activo(fecha_val):
         return max(0, diff)
     except Exception:
         return 0
+
+def render_plataformas_badges(val):
+    if not val:
+        return '<span class="text-muted small">-</span>'
+    s = str(val).lower()
+    badges = []
+    if 'facebook' in s or 'fb' in s:
+        badges.append('<span class="badge bg-primary text-light" style="font-size: 0.68rem;"><i class="bi bi-facebook"></i> Facebook</span>')
+    if 'instagram' in s or 'ig' in s:
+        badges.append('<span class="badge text-light" style="background: linear-gradient(45deg, #f09433, #dc2743, #bc1888); font-size: 0.68rem;"><i class="bi bi-instagram"></i> Instagram</span>')
+    if 'messenger' in s:
+        badges.append('<span class="badge bg-info text-dark" style="font-size: 0.68rem;"><i class="bi bi-messenger"></i> Messenger</span>')
+    if 'audience' in s or 'network' in s:
+        badges.append('<span class="badge bg-secondary text-light" style="font-size: 0.68rem;"><i class="bi bi-globe"></i> Audience Network</span>')
+    
+    if not badges:
+        return f'<span class="badge bg-secondary-subtle text-secondary" style="font-size: 0.68rem;">{val}</span>'
+    return ' '.join(badges)
 
 LOGIN_TEMPLATE = """
 <!DOCTYPE html>
@@ -358,14 +376,19 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
+            <!-- Filtro Plataforma -->
             <div class="col-md-2">
-                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-toggle-on"></i> Estado</label>
-                <select name="estado" class="form-select form-select-sm">
-                    <option value="">Todos</option>
-                    <option value="Activo" {% if request.args.get('estado') == 'Activo' %}selected{% endif %}>Activo</option>
-                    <option value="Inactivo" {% if request.args.get('estado') == 'Inactivo' %}selected{% endif %}>Inactivo</option>
+                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-share"></i> Plataforma</label>
+                <select name="plataforma" class="form-select form-select-sm">
+                    <option value="">Todas</option>
+                    <option value="facebook" {% if request.args.get('plataforma') == 'facebook' %}selected{% endif %}>Facebook</option>
+                    <option value="instagram" {% if request.args.get('plataforma') == 'instagram' %}selected{% endif %}>Instagram</option>
+                    <option value="messenger" {% if request.args.get('plataforma') == 'messenger' %}selected{% endif %}>Messenger</option>
+                    <option value="audience" {% if request.args.get('plataforma') == 'audience' %}selected{% endif %}>Audience Network</option>
                 </select>
             </div>
+
+            <!-- Filtro Formato -->
             <div class="col-md-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-play-circle"></i> Formato</label>
                 <select name="formato" class="form-select form-select-sm">
@@ -374,6 +397,7 @@ HTML_TEMPLATE = """
                     <option value="imagen" {% if request.args.get('formato') == 'imagen' %}selected{% endif %}>Imagen</option>
                 </select>
             </div>
+
             <div class="col-md-2 d-flex gap-2">
                 <button type="submit" class="btn btn-sm btn-primary w-100"><i class="bi bi-funnel"></i> Filtrar</button>
                 <a href="/" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-counterclockwise"></i></a>
@@ -466,10 +490,11 @@ HTML_TEMPLATE = """
                             <tr class="small text-muted">
                                 <th>Empresa</th>
                                 <th>Estado / Desempeño</th>
+                                <th>Plataformas</th>
                                 <th>Formato</th>
                                 <th>Copia / Texto</th>
                                 <th>Tiempo Activo</th>
-                                <th>Fecha Inicio</th>
+                                <th>Fecha de Subida</th>
                                 <th>Acción</th>
                             </tr>
                         </thead>
@@ -490,19 +515,26 @@ HTML_TEMPLATE = """
                                     </div>
                                 </td>
                                 <td>
+                                    {{ ad.plataformas_html|safe }}
+                                </td>
+                                <td>
                                     {% if 'video' in (ad.formato|string|lower) %}
                                         <span class="text-danger small fw-semibold"><i class="bi bi-camera-video"></i> Video</span>
                                     {% else %}
                                         <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
                                     {% endif %}
                                 </td>
-                                <td class="small text-muted" style="max-width: 300px;">
+                                <td class="small text-muted" style="max-width: 280px;">
                                     {{ (ad.texto or ad.titulo or 'Sin descripción')[:120] }}{% if (ad.texto or ad.titulo or '')|length > 120 %}...{% endif %}
                                 </td>
                                 <td class="small">
+                                    {% if ad.fecha_display != 'N/A' %}
                                     <span class="fw-bold {% if ad.es_winning %}text-danger{% else %}text-muted{% endif %}">
                                         {{ ad.dias_activo }} días
                                     </span>
+                                    {% else %}
+                                    <span class="text-muted">-</span>
+                                    {% endif %}
                                 </td>
                                 <td class="small fw-semibold">{{ ad.fecha_display }}</td>
                                 <td>
@@ -517,7 +549,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="7" class="text-center py-5 text-muted">
+                                <td colspan="8" class="text-center py-5 text-muted">
                                     <i class="bi bi-folder-x fs-2 d-block mb-2"></i> No hay registros disponibles
                                 </td>
                             </tr>
@@ -544,10 +576,11 @@ HTML_TEMPLATE = """
                             <tr class="small text-muted">
                                 <th>Empresa</th>
                                 <th>Insignia</th>
+                                <th>Plataformas</th>
                                 <th>Formato</th>
                                 <th>Texto</th>
                                 <th>Días Activo</th>
-                                <th>Fecha Inicio</th>
+                                <th>Fecha de Subida</th>
                                 <th>Enlace</th>
                             </tr>
                         </thead>
@@ -556,6 +589,7 @@ HTML_TEMPLATE = """
                             <tr>
                                 <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
                                 <td><span class="badge badge-winning">🔥 Winning Ad</span></td>
+                                <td>{{ ad.plataformas_html|safe }}</td>
                                 <td>
                                     {% if 'video' in (ad.formato|string|lower) %}
                                         <span class="text-danger small fw-semibold"><i class="bi bi-camera-video"></i> Video</span>
@@ -563,7 +597,7 @@ HTML_TEMPLATE = """
                                         <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
                                     {% endif %}
                                 </td>
-                                <td class="small text-muted" style="max-width: 320px;">
+                                <td class="small text-muted" style="max-width: 300px;">
                                     {{ (ad.texto or ad.titulo or 'Sin descripción')[:140] }}
                                 </td>
                                 <td><span class="badge bg-danger-subtle text-danger fw-bold">{{ ad.dias_activo }} días</span></td>
@@ -578,7 +612,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="7" class="text-center py-5 text-muted">
+                                <td colspan="8" class="text-center py-5 text-muted">
                                     <i class="bi bi-shield-check fs-2 d-block mb-2 text-warning"></i> No hay campañas con más de 30 días activos en los filtros actuales.
                                 </td>
                             </tr>
@@ -598,9 +632,10 @@ HTML_TEMPLATE = """
                             <tr class="small text-muted">
                                 <th>Empresa</th>
                                 <th>Distintivo</th>
+                                <th>Plataformas</th>
                                 <th>Formato</th>
                                 <th>Texto</th>
-                                <th>Fecha Inicio</th>
+                                <th>Fecha de Subida</th>
                                 <th>Enlace</th>
                             </tr>
                         </thead>
@@ -609,6 +644,7 @@ HTML_TEMPLATE = """
                             <tr>
                                 <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
                                 <td><span class="badge badge-new"><i class="bi bi-stars"></i> Nuevo</span></td>
+                                <td>{{ ad.plataformas_html|safe }}</td>
                                 <td>
                                     {% if 'video' in (ad.formato|string|lower) %}
                                         <span class="text-danger small fw-semibold"><i class="bi bi-camera-video"></i> Video</span>
@@ -616,7 +652,7 @@ HTML_TEMPLATE = """
                                         <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
                                     {% endif %}
                                 </td>
-                                <td class="small text-muted" style="max-width: 320px;">
+                                <td class="small text-muted" style="max-width: 300px;">
                                     {{ (ad.texto or ad.titulo or 'Sin descripción')[:140] }}
                                 </td>
                                 <td class="small fw-semibold">{{ ad.fecha_display }}</td>
@@ -630,7 +666,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="6" class="text-center py-5 text-muted">
+                                <td colspan="7" class="text-center py-5 text-muted">
                                     <i class="bi bi-check2-circle fs-2 d-block mb-2 text-success"></i> No se han detectado nuevos anuncios en las últimas 48 horas.
                                 </td>
                             </tr>
@@ -832,6 +868,7 @@ def index():
     companias_sel = [c.strip() for c in companias_sel if c.strip()]
     estado = request.args.get('estado', '').strip()
     formato = request.args.get('formato', '').strip()
+    plataforma = request.args.get('plataforma', '').strip()
 
     conn = get_db_connection()
     anuncios = []
@@ -859,6 +896,9 @@ def index():
                 if formato:
                     query += " AND formato ILIKE %s"
                     params.append(f"%{formato}%")
+                if plataforma:
+                    query += " AND plataformas ILIKE %s"
+                    params.append(f"%{plataforma}%")
 
                 query += " ORDER BY id DESC LIMIT 1000"
                 cur.execute(query, tuple(params))
@@ -869,7 +909,6 @@ def index():
         finally:
             conn.close()
 
-    # Procesar fecha de cada anuncio de forma unificada
     anuncios_winning = []
     anuncios_nuevos = []
 
@@ -878,12 +917,12 @@ def index():
         a['fecha_display'] = fecha_detectada
         dias = calcular_dias_activo(fecha_detectada)
         a['dias_activo'] = dias
-        a['es_winning'] = dias >= DIAS_WINNING_AD
+        a['es_winning'] = dias >= DIAS_WINNING_AD and fecha_detectada != 'N/A'
+        a['plataformas_html'] = render_plataformas_badges(a.get('plataformas'))
         
         if a['es_winning']:
             anuncios_winning.append(a)
             
-        # Detectar nuevos si tiene 2 días o menos de antigüedad
         if dias <= 2 and fecha_detectada != 'N/A':
             anuncios_nuevos.append(a)
 
@@ -926,7 +965,7 @@ def index():
         "values": [p[1] for p in top_palabras]
     }
 
-    # Gráfico de Tendencias
+    # Gráfico de Tendencias cronológico basado en fecha_subida
     timeline_dict = {}
     for a in anuncios:
         f_norm = parse_date_str(a.get('fecha_display'))
@@ -1022,6 +1061,7 @@ def descargar_excel():
         companias_sel = [c.strip() for c in companias_sel if c.strip()]
         estado = request.args.get('estado', '').strip()
         formato = request.args.get('formato', '').strip()
+        plataforma = request.args.get('plataforma', '').strip()
 
         query = "SELECT * FROM anuncios WHERE 1=1"
         params = []
@@ -1039,14 +1079,16 @@ def descargar_excel():
         if formato:
             query += " AND formato ILIKE %s"
             params.append(f"%{formato}%")
+        if plataforma:
+            query += " AND plataformas ILIKE %s"
+            params.append(f"%{plataforma}%")
 
         query += " ORDER BY id DESC"
 
         df = pd.read_sql_query(query, conn, params=params)
         
-        # Asignar fecha detectada y métricas de longevidad en Excel
-        df['fecha_inicio_detectada'] = df.apply(lambda row: extraer_fecha_anuncio(row.to_dict()), axis=1)
-        df['dias_activo'] = df['fecha_inicio_detectada'].apply(calcular_dias_activo)
+        df['fecha_subida_detectada'] = df.apply(lambda row: extraer_fecha_anuncio(row.to_dict()), axis=1)
+        df['dias_activo'] = df['fecha_subida_detectada'].apply(calcular_dias_activo)
         df['es_winning_ad'] = df['dias_activo'] >= DIAS_WINNING_AD
 
         output = io.BytesIO()
