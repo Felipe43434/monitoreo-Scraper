@@ -7,8 +7,9 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
 from collections import Counter
+from functools import wraps
 import pandas as pd
-from flask import Flask, render_template_string, request, redirect, url_for, send_file
+from flask import Flask, render_template_string, request, redirect, url_for, send_file, session
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "meta-ads-intelligence-secret-2026")
@@ -18,6 +19,8 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 WORKFLOW_FILE = "scraper.yml"
 
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "UnaClaveMuySegura2026")
+
 # Palabras comunes a ignorar en el análisis de términos
 STOPWORDS_ES = {
     'de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 
@@ -26,10 +29,20 @@ STOPWORDS_ES = {
     'también', 'me', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo', 'nos', 'durante', 'todos', 
     'uno', 'les', 'ni', 'contra', 'otros', 'ese', 'eso', 'ante', 'ellos', 'e', 'esto', 'mí', 'antes', 
     'algunos', 'qué', 'unos', 'yo', 'otro', 'otras', 'otra', 'él', 'tanto', 'esa', 'estos', 'mucho', 
-    'quienes', 'nada', 'muchos', 'cual', 'sea', 'poco', 'ella', 'estar', 'estas', 'algunas', 'algo', 
+    'quienes', 'nada', 'muchos', 'cual', 'sea', 'poco', 'ella', 'estar', 'estas', 'estás', 'algunas', 'algo', 
     'nosotros', 'mi', 'mis', 'tu', 'tus', 'te', 'ti', 'aquí', 'solo', 'cada', 'ahora', 'mas', 'si',
-    'http', 'https', 'com', 'www', 'meta', 'ads', 'click', 'link'
+    'http', 'https', 'com', 'www', 'meta', 'ads', 'click', 'link',
+    # Filtros personalizados
+    'fina', 'orden'
 }
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
 
 def get_db_connection():
     if not DATABASE_URL:
@@ -39,6 +52,83 @@ def get_db_connection():
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}sslmode=require"
     return psycopg2.connect(url)
+
+def parse_date_str(val):
+    if not val:
+        return None
+    s = str(val).strip()
+    match_iso = re.search(r'\b(\d{4}[-/]\d{1,2}[-/]\d{1,2})\b', s)
+    if match_iso:
+        return match_iso.group(1).replace('/', '-')
+    match_lat = re.search(r'\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b', s)
+    if match_lat:
+        d, m, y = match_lat.groups()
+        return f"{y}-{int(m):02d}-{int(d):02d}"
+    return s[:10] if len(s) >= 10 else None
+
+LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Acceso | Meta Ads Intelligence</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <style>
+        :root { --bg-body: #0f172a; --card-bg: #1e293b; --border-color: #334155; --text-main: #f8fafc; }
+        body {
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+        .login-card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 32px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+    </style>
+</head>
+<body>
+
+<div class="login-card">
+    <div class="text-center mb-4">
+        <div class="d-inline-flex p-3 bg-primary bg-opacity-10 text-primary rounded-circle mb-3">
+            <i class="bi bi-shield-lock-fill fs-2"></i>
+        </div>
+        <h4 class="fw-bold mb-1">Acceso Protegido</h4>
+        <p class="text-secondary small">Meta Ads Intelligence Dashboard</p>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-danger py-2 small border-0 d-flex align-items-center gap-2 mb-3" role="alert">
+        <i class="bi bi-exclamation-triangle-fill"></i>
+        <span>{{ error }}</span>
+    </div>
+    {% endif %}
+
+    <form method="POST" action="/login">
+        <div class="mb-3">
+            <label class="form-label small fw-semibold text-secondary">Contraseña de Acceso</label>
+            <input type="password" name="password" class="form-control bg-dark text-light border-secondary" placeholder="Ingresa la clave..." required autofocus>
+        </div>
+        <button type="submit" class="btn btn-primary w-100 fw-semibold py-2">
+            Ingresar al Dashboard
+        </button>
+    </form>
+</div>
+
+</body>
+</html>
+"""
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -93,6 +183,10 @@ HTML_TEMPLATE = """
             50% { opacity: 0.6; }
             100% { opacity: 1; }
         }
+        .dropdown-menu-scroll {
+            max-height: 250px;
+            overflow-y: auto;
+        }
     </style>
 </head>
 <body>
@@ -104,7 +198,6 @@ HTML_TEMPLATE = """
             <span class="fw-bold tracking-tight">Meta Ads Intelligence</span>
         </a>
         <div class="d-flex align-items-center gap-2 ms-auto">
-            <!-- Formulario de Scraping -->
             <form action="/lanzar_scraper" method="POST" class="d-flex align-items-center gap-2 m-0">
                 <select name="dias_scraping" class="form-select form-select-sm bg-dark text-light border-secondary">
                     <option value="7">7 días</option>
@@ -117,7 +210,6 @@ HTML_TEMPLATE = """
                 </button>
             </form>
 
-            <!-- Menú de Configuración / Engranaje -->
             <div class="dropdown">
                 <button class="btn btn-sm btn-outline-secondary dropdown-toggle text-light border-0" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="Configuración">
                     <i class="bi bi-gear-fill fs-5"></i>
@@ -128,6 +220,12 @@ HTML_TEMPLATE = """
                         <button class="dropdown-item d-flex align-items-center justify-content-between" onclick="toggleTheme()">
                             <span id="themeTextLabel"><i class="bi bi-moon-stars me-2"></i>Modo Oscuro</span>
                         </button>
+                    </li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li>
+                        <a class="dropdown-item text-danger d-flex align-items-center gap-2" href="/logout">
+                            <i class="bi bi-box-arrow-right"></i> Cerrar Sesión
+                        </a>
                     </li>
                 </ul>
             </div>
@@ -144,7 +242,7 @@ HTML_TEMPLATE = """
     </div>
     {% endif %}
 
-    <!-- KPIs Principales -->
+    <!-- KPIs -->
     <div class="row g-3 mb-4">
         <div class="col-6 col-lg-3">
             <div class="card-custom p-3">
@@ -186,20 +284,41 @@ HTML_TEMPLATE = """
 
     <!-- Panel de Filtros -->
     <div class="card-custom p-3 mb-4">
-        <form method="GET" action="/" class="row g-2 align-items-end">
+        <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end">
             <div class="col-md-3">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-search"></i> Buscar</label>
                 <input type="text" name="q" class="form-control form-control-sm" placeholder="Texto, título, link..." value="{{ request.args.get('q', '') }}">
             </div>
-            <div class="col-md-2">
-                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-building"></i> Compañía</label>
-                <select name="compania" class="form-select form-select-sm">
-                    <option value="">Todas ({{ lista_companias|length }})</option>
-                    {% for comp in lista_companias %}
-                    <option value="{{ comp }}" {% if request.args.get('compania') == comp %}selected{% endif %}>{{ comp }}</option>
-                    {% endfor %}
-                </select>
+
+            <!-- Filtro Selección Múltiple Compañías -->
+            <div class="col-md-3">
+                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-building"></i> Compañías ({% if companias_sel %}{{ companias_sel|length }} selec.{% else %}Todas{% endif %})</label>
+                <div class="dropdown">
+                    <button class="btn btn-sm btn-outline-secondary w-100 text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                        <span class="text-truncate">
+                            {% if companias_sel %}
+                                {{ companias_sel|join(', ') }}
+                            {% else %}
+                                Todas las compañías ({{ lista_companias|length }})
+                            {% endif %}
+                        </span>
+                        <i class="bi bi-chevron-down ms-1"></i>
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow">
+                        <div class="form-check pb-1 mb-1 border-bottom">
+                            <input class="form-check-input" type="checkbox" id="selectAllCompanies" onchange="toggleAllCompanies(this)">
+                            <label class="form-check-label small fw-bold" for="selectAllCompanies">Seleccionar / Deseleccionar Todo</label>
+                        </div>
+                        {% for comp in lista_companias %}
+                        <div class="form-check">
+                            <input class="form-check-input comp-checkbox" type="checkbox" name="compania" value="{{ comp }}" id="comp_{{ loop.index }}" {% if comp in companias_sel %}checked{% endif %}>
+                            <label class="form-check-label small" for="comp_{{ loop.index }}">{{ comp }}</label>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
             </div>
+
             <div class="col-md-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-toggle-on"></i> Estado</label>
                 <select name="estado" class="form-select form-select-sm">
@@ -216,7 +335,7 @@ HTML_TEMPLATE = """
                     <option value="imagen" {% if request.args.get('formato') == 'imagen' %}selected{% endif %}>Imagen</option>
                 </select>
             </div>
-            <div class="col-md-3 d-flex gap-2">
+            <div class="col-md-2 d-flex gap-2">
                 <button type="submit" class="btn btn-sm btn-primary w-100"><i class="bi bi-funnel"></i> Filtrar</button>
                 <a href="/" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-counterclockwise"></i></a>
                 <a href="/descargar_excel?{{ request.query_string.decode() }}" class="btn btn-sm btn-success text-nowrap"><i class="bi bi-file-earmark-excel"></i> Exportar</a>
@@ -224,7 +343,7 @@ HTML_TEMPLATE = """
         </form>
     </div>
 
-    <!-- Pestañas de Navegación -->
+    <!-- Pestañas -->
     <ul class="nav nav-tabs mb-3" id="mainTab" role="tablist">
         <li class="nav-item">
             <button class="nav-link active fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-charts" type="button">
@@ -258,16 +377,33 @@ HTML_TEMPLATE = """
                 <div class="col-lg-8">
                     <div class="card-custom p-3 h-100">
                         <h6 class="fw-bold mb-3"><i class="bi bi-graph-up"></i> Publicación de Anuncios por Empresa</h6>
-                        <div style="height: 320px;">
+                        <div style="height: 330px; position: relative;">
                             <canvas id="timelineChart"></canvas>
                         </div>
                     </div>
                 </div>
                 <div class="col-lg-4">
                     <div class="card-custom p-3 h-100">
-                        <h6 class="fw-bold mb-3"><i class="bi bi-pie-chart"></i> Distribución de Formatos</h6>
-                        <div style="height: 320px;">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h6 class="fw-bold m-0"><i class="bi bi-pie-chart"></i> Distribución de Formatos</h6>
+                            <span class="badge bg-secondary-subtle text-secondary small">Total: {{ total_anuncios }}</span>
+                        </div>
+                        <div style="height: 250px; position: relative;">
                             <canvas id="formatChart"></canvas>
+                        </div>
+                        <div class="row text-center mt-3 pt-2 border-top g-1 small">
+                            <div class="col-4">
+                                <span class="text-danger fw-bold d-block">{{ format_data.pct_videos }}%</span>
+                                <span class="text-muted" style="font-size:0.75rem;">Videos ({{ format_data.videos }})</span>
+                            </div>
+                            <div class="col-4">
+                                <span class="text-warning fw-bold d-block">{{ format_data.pct_imagenes }}%</span>
+                                <span class="text-muted" style="font-size:0.75rem;">Imágenes ({{ format_data.imagenes }})</span>
+                            </div>
+                            <div class="col-4">
+                                <span class="text-secondary fw-bold d-block">{{ format_data.pct_otros }}%</span>
+                                <span class="text-muted" style="font-size:0.75rem;">Otros ({{ format_data.otros }})</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -332,7 +468,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Panel 3: Nuevos Anuncios Recientes -->
+        <!-- Panel 3: Nuevos Anuncios -->
         <div class="tab-pane fade" id="tab-new">
             <div class="card-custom overflow-hidden">
                 <div class="table-responsive">
@@ -384,7 +520,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Panel 4: Términos Más Repetidos -->
+        <!-- Panel 4: Términos Frecuentes -->
         <div class="tab-pane fade" id="tab-keywords">
             <div class="row g-3">
                 <div class="col-lg-7">
@@ -431,7 +567,10 @@ HTML_TEMPLATE = """
 </div>
 
 <script>
-    // Modo Oscuro / Claro
+    function toggleAllCompanies(source) {
+        document.querySelectorAll('.comp-checkbox').forEach(cb => cb.checked = source.checked);
+    }
+
     function getTheme() {
         return localStorage.getItem('theme') || 'light';
     }
@@ -453,12 +592,12 @@ HTML_TEMPLATE = """
     }
     updateThemeUI(getTheme());
 
-    // Gráficas
     const timelineData = {{ timeline_data|tojson }};
     const formatData = {{ format_data|tojson }};
     const keywordsData = {{ keywords_chart_data|tojson }};
 
-    if (document.getElementById('timelineChart') && timelineData.labels.length > 0) {
+    // 1. Gráfico de Líneas (Tendencias)
+    if (document.getElementById('timelineChart') && timelineData.labels && timelineData.labels.length > 0) {
         new Chart(document.getElementById('timelineChart'), {
             type: 'line',
             data: {
@@ -468,31 +607,56 @@ HTML_TEMPLATE = """
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { position: 'bottom' } },
-                scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: { position: 'bottom', labels: { boxWidth: 12, usePointStyle: true } }
+                },
+                scales: {
+                    y: { beginAtZero: true, ticks: { precision: 0 } },
+                    x: { grid: { display: false } }
+                }
             }
         });
     }
 
+    // 2. Gráfico de Dona con Porcentajes
     if (document.getElementById('formatChart')) {
+        const totalFmt = formatData.videos + formatData.imagenes + formatData.otros;
         new Chart(document.getElementById('formatChart'), {
             type: 'doughnut',
             data: {
-                labels: ['Videos', 'Imágenes', 'Otros'],
+                labels: [
+                    `Videos (${formatData.pct_videos}%)`,
+                    `Imágenes (${formatData.pct_imagenes}%)`,
+                    `Otros (${formatData.pct_otros}%)`
+                ],
                 datasets: [{
                     data: [formatData.videos, formatData.imagenes, formatData.otros],
-                    backgroundColor: ['#ef4444', '#f59e0b', '#64748b']
+                    backgroundColor: ['#ef4444', '#f59e0b', '#64748b'],
+                    borderWidth: 2
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { position: 'bottom' } }
+                plugins: {
+                    legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12 } },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const val = context.raw || 0;
+                                const pct = totalFmt > 0 ? ((val / totalFmt) * 100).toFixed(1) : 0;
+                                return ` ${context.label.split(' (')[0]}: ${val} (${pct}%)`;
+                            }
+                        }
+                    }
+                }
             }
         });
     }
 
-    if (document.getElementById('keywordsChart') && keywordsData.labels.length > 0) {
+    // 3. Gráfico de Palabras Clave
+    if (document.getElementById('keywordsChart') && keywordsData.labels && keywordsData.labels.length > 0) {
         new Chart(document.getElementById('keywordsChart'), {
             type: 'bar',
             data: {
@@ -519,11 +683,29 @@ HTML_TEMPLATE = """
 </html>
 """
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        if request.form.get('password') == DASHBOARD_PASSWORD:
+            session['logged_in'] = True
+            return redirect(url_for('index'))
+        else:
+            error = "Contraseña incorrecta. Inténtalo de nuevo."
+    return render_template_string(LOGIN_TEMPLATE, error=error)
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect(url_for('login'))
+
 @app.route('/')
+@login_required
 def index():
     msg = request.args.get('msg')
     q = request.args.get('q', '').strip()
-    compania = request.args.get('compania', '').strip()
+    companias_sel = request.args.getlist('compania')
+    companias_sel = [c.strip() for c in companias_sel if c.strip()]
     estado = request.args.get('estado', '').strip()
     formato = request.args.get('formato', '').strip()
 
@@ -535,7 +717,7 @@ def index():
     if conn:
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT DISTINCT compania FROM anuncios WHERE compania IS NOT NULL ORDER BY compania ASC")
+                cur.execute("SELECT DISTINCT compania FROM anuncios WHERE compania IS NOT NULL AND compania != '' ORDER BY compania ASC")
                 lista_companias = [r['compania'] for r in cur.fetchall()]
 
                 query = "SELECT * FROM anuncios WHERE 1=1"
@@ -545,9 +727,9 @@ def index():
                     query += " AND (texto ILIKE %s OR titulo ILIKE %s OR link_individual ILIKE %s)"
                     like_val = f"%{q}%"
                     params.extend([like_val, like_val, like_val])
-                if compania:
-                    query += " AND compania = %s"
-                    params.append(compania)
+                if companias_sel:
+                    query += " AND compania = ANY(%s)"
+                    params.append(companias_sel)
                 if estado:
                     query += " AND estado = %s"
                     params.append(estado)
@@ -555,11 +737,10 @@ def index():
                     query += " AND formato ILIKE %s"
                     params.append(f"%{formato}%")
 
-                query += " ORDER BY fecha_inicio DESC NULLS LAST LIMIT 500"
+                query += " ORDER BY fecha_inicio DESC NULLS LAST, id DESC LIMIT 1000"
                 cur.execute(query, tuple(params))
                 anuncios = cur.fetchall()
 
-                # Anuncios de las últimas 48 horas
                 limite_reciente = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
                 cur.execute("SELECT * FROM anuncios WHERE fecha_inicio >= %s ORDER BY fecha_inicio DESC LIMIT 100", (limite_reciente,))
                 anuncios_nuevos = cur.fetchall()
@@ -577,7 +758,11 @@ def index():
     total_otros = max(0, total_anuncios - (total_videos + total_fotos))
     total_nuevos = len(anuncios_nuevos)
 
-    # 1. Extracción de términos más repetidos (Keywords)
+    pct_videos = round((total_videos / total_anuncios * 100), 1) if total_anuncios > 0 else 0
+    pct_imagenes = round((total_fotos / total_anuncios * 100), 1) if total_anuncios > 0 else 0
+    pct_otros = round((total_otros / total_anuncios * 100), 1) if total_anuncios > 0 else 0
+
+    # Extracción de Palabras Clave
     palabras_encontradas = []
     for a in anuncios:
         texto_completo = f"{a.get('texto') or ''} {a.get('titulo') or ''}".lower()
@@ -593,19 +778,19 @@ def index():
         "values": [p[1] for p in top_palabras]
     }
 
-    # 2. Datos de tendencias de fechas
+    # Procesamiento y Normalización de Fechas para el Gráfico de Líneas
     timeline_dict = {}
     for a in anuncios:
-        f_str = str(a.get('fecha_inicio', ''))[:10]
-        if f_str and len(f_str) == 10:
+        f_norm = parse_date_str(a.get('fecha_inicio'))
+        if f_norm:
             comp = a.get('compania', 'Otras')
-            if f_str not in timeline_dict:
-                timeline_dict[f_str] = {}
-            timeline_dict[f_str][comp] = timeline_dict[f_str].get(comp, 0) + 1
+            if f_norm not in timeline_dict:
+                timeline_dict[f_norm] = {}
+            timeline_dict[f_norm][comp] = timeline_dict[f_norm].get(comp, 0) + 1
 
     sorted_dates = sorted(timeline_dict.keys())
-    top_companias = list(companias_set)[:5]
-    colors = ['#0284c7', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6']
+    top_companias = list(companias_set)[:6]
+    palette = ['#0284c7', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899']
 
     datasets = []
     for idx, comp in enumerate(top_companias):
@@ -613,19 +798,28 @@ def index():
         datasets.append({
             "label": comp,
             "data": data,
-            "borderColor": colors[idx % len(colors)],
-            "backgroundColor": colors[idx % len(colors)],
-            "tension": 0.3
+            "borderColor": palette[idx % len(palette)],
+            "backgroundColor": palette[idx % len(palette)],
+            "tension": 0.25,
+            "pointRadius": 3
         })
 
     timeline_data = {"labels": sorted_dates, "datasets": datasets}
-    format_data = {"videos": total_videos, "imagenes": total_fotos, "otros": total_otros}
+    format_data = {
+        "videos": total_videos,
+        "imagenes": total_fotos,
+        "otros": total_otros,
+        "pct_videos": pct_videos,
+        "pct_imagenes": pct_imagenes,
+        "pct_otros": pct_otros
+    }
 
     return render_template_string(
         HTML_TEMPLATE,
         anuncios=anuncios,
         anuncios_nuevos=anuncios_nuevos,
         lista_companias=lista_companias,
+        companias_sel=companias_sel,
         total_anuncios=total_anuncios,
         total_companias=total_companias,
         total_videos=total_videos,
@@ -639,6 +833,7 @@ def index():
     )
 
 @app.route('/lanzar_scraper', methods=['POST'])
+@login_required
 def lanzar_scraper():
     dias = request.form.get("dias_scraping", "30")
 
@@ -665,6 +860,7 @@ def lanzar_scraper():
         return redirect(url_for('index', msg=f"❌ Error al conectar con GitHub Actions: {e}"))
 
 @app.route('/descargar_excel')
+@login_required
 def descargar_excel():
     conn = get_db_connection()
     if not conn:
@@ -672,7 +868,8 @@ def descargar_excel():
 
     try:
         q = request.args.get('q', '').strip()
-        compania = request.args.get('compania', '').strip()
+        companias_sel = request.args.getlist('compania')
+        companias_sel = [c.strip() for c in companias_sel if c.strip()]
         estado = request.args.get('estado', '').strip()
         formato = request.args.get('formato', '').strip()
 
@@ -683,15 +880,17 @@ def descargar_excel():
             query += " AND (texto ILIKE %s OR titulo ILIKE %s OR link_individual ILIKE %s)"
             like_val = f"%{q}%"
             params.extend([like_val, like_val, like_val])
-        if compania:
-            query += " AND compania = %s"
-            params.append(compania)
+        if companias_sel:
+            query += " AND compania = ANY(%s)"
+            params.append(companias_sel)
         if estado:
             query += " AND estado = %s"
             params.append(estado)
         if formato:
             query += " AND formato ILIKE %s"
             params.append(f"%{formato}%")
+
+        query += " ORDER BY fecha_inicio DESC NULLS LAST"
 
         df = pd.read_sql_query(query, conn, params=params)
         output = io.BytesIO()
