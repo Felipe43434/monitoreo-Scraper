@@ -259,11 +259,11 @@ HTML_TEMPLATE = """
             z-index: 20;
         }
         .sync-container {
-            min-width: 210px;
+            min-width: 230px;
         }
         .progress-inline {
-            height: 4px;
-            border-radius: 2px;
+            height: 5px;
+            border-radius: 3px;
             overflow: hidden;
             background-color: rgba(255, 255, 255, 0.15);
         }
@@ -279,10 +279,10 @@ HTML_TEMPLATE = """
         </a>
         <div class="d-flex align-items-center gap-2 ms-auto">
             
-            <!-- Recuadro de Sincronización con Barra de Progreso Integrada Debajo -->
+            <!-- Sincronizador con Barra de Progreso y Tiempo Restante -->
             <div class="sync-container d-flex flex-column gap-1">
                 <form action="/lanzar_scraper" method="POST" id="scraperForm" onsubmit="startInlineScraping(event)" class="d-flex align-items-center gap-2 m-0">
-                    <select name="dias_scraping" id="selectDiasScraping" class="form-select form-select-sm bg-dark text-light border-secondary" style="width: 95px;">
+                    <select name="dias_scraping" id="selectDiasScraping" class="form-select form-select-sm bg-dark text-light border-secondary" style="width: 100px;">
                         <option value="7">7 días</option>
                         <option value="15">15 días</option>
                         <option value="30" selected>30 días</option>
@@ -293,14 +293,14 @@ HTML_TEMPLATE = """
                     </button>
                 </form>
 
-                <!-- Barra de Progreso Debajo del Recuadro -->
+                <!-- Barra de Progreso y Cuenta Regresiva de Tiempo -->
                 <div id="inlineProgressWrapper" class="d-none">
                     <div class="progress progress-inline">
                         <div id="inlineProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" style="width: 0%;"></div>
                     </div>
-                    <div class="d-flex justify-content-between align-items-center mt-1">
-                        <span id="inlineProgressStatus" class="text-info" style="font-size: 0.68rem;">Conectando...</span>
-                        <span id="inlineProgressPct" class="text-secondary" style="font-size: 0.68rem;">0%</span>
+                    <div class="d-flex justify-content-between align-items-center mt-1" style="font-size: 0.68rem;">
+                        <span id="inlineProgressStatus" class="text-info text-truncate" style="max-width: 130px;">Iniciando...</span>
+                        <span id="inlineProgressETA" class="text-warning fw-semibold">0s restantes</span>
                     </div>
                 </div>
             </div>
@@ -337,7 +337,7 @@ HTML_TEMPLATE = """
     </div>
     {% endif %}
 
-    <!-- KPIs (5 Métricas Clave) -->
+    <!-- KPIs -->
     <div class="row g-3 mb-4">
         <div class="col-6 col-md-4 col-xl">
             <div class="card-custom p-3 h-100">
@@ -381,7 +381,7 @@ HTML_TEMPLATE = """
                     <span class="stat-label">Nuevos (48h)</span>
                     <i class="bi bi-stars text-info fs-5"></i>
                 </div>
-                <div class="stat-value text-info">{{ total_nuevos }}</div>
+                <div class="stat-value text-info" id="kpiNuevosCount">{{ total_nuevos }}</div>
             </div>
         </div>
     </div>
@@ -476,9 +476,7 @@ HTML_TEMPLATE = """
         <li class="nav-item">
             <button class="nav-link fw-semibold position-relative" data-bs-toggle="tab" data-bs-target="#tab-new" type="button">
                 <i class="bi bi-stars text-info"></i> Nuevos Anuncios
-                {% if total_nuevos > 0 %}
-                <span class="badge rounded-pill bg-info ms-1">{{ total_nuevos }}</span>
-                {% endif %}
+                <span class="badge rounded-pill bg-info ms-1" id="tabNuevosBadge" {% if total_nuevos == 0 %}style="display:none;"{% endif %}>{{ total_nuevos }}</span>
             </button>
         </li>
         <li class="nav-item">
@@ -496,7 +494,6 @@ HTML_TEMPLATE = """
                     <div class="card-custom p-3 h-100">
                         <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
                             <h6 class="fw-bold m-0"><i class="bi bi-graph-up"></i> Publicación de Anuncios por Empresa</h6>
-                            <!-- Selector de Rango Temporal -->
                             <div class="btn-group btn-group-sm" role="group" id="timeRangeFilter">
                                 <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(7, this)">7D</button>
                                 <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(30, this)">30D</button>
@@ -570,9 +567,7 @@ HTML_TEMPLATE = """
                                         {% endif %}
                                     </div>
                                 </td>
-                                <td>
-                                    {{ ad.plataformas_html|safe }}
-                                </td>
+                                <td>{{ ad.plataformas_html|safe }}</td>
                                 <td>
                                     {% if 'video' in (ad.formato|string|lower) %}
                                         <span class="text-danger small fw-semibold"><i class="bi bi-camera-video"></i> Video</span>
@@ -616,7 +611,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Panel 3: Winning Ads (Solo Activos de Alto Rendimiento) -->
+        <!-- Panel 3: Winning Ads -->
         <div class="tab-pane fade" id="tab-winning">
             <div class="card-custom overflow-hidden">
                 <div class="p-3 bg-danger bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
@@ -679,11 +674,23 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Panel 4: Nuevos Anuncios -->
+        <!-- Panel 4: Nuevos Anuncios con Botón Marcar como Vistos -->
         <div class="tab-pane fade" id="tab-new">
             <div class="card-custom overflow-hidden">
-                <div class="table-responsive">
-                    <table class="table table-hover align-middle mb-0">
+                <div class="p-3 bg-info bg-opacity-10 border-bottom d-flex flex-wrap align-items-center justify-content-between gap-2">
+                    <div>
+                        <h6 class="fw-bold text-info mb-0"><i class="bi bi-stars"></i> Nuevos Anuncios Detectados (Últimas 48h)</h6>
+                        <span class="small text-muted">Campañas encontradas en los sondeos más recientes</span>
+                    </div>
+                    {% if total_nuevos > 0 %}
+                    <button type="button" class="btn btn-sm btn-outline-info d-flex align-items-center gap-1" id="btnMarcarVistos" onclick="marcarTodosVistos()">
+                        <i class="bi bi-check-all fs-6"></i> Marcar todos como vistos
+                    </button>
+                    {% endif %}
+                </div>
+
+                <div class="table-responsive" id="nuevosContainer">
+                    <table class="table table-hover align-middle mb-0" id="nuevosTable">
                         <thead class="table-light">
                             <tr class="small text-muted">
                                 <th>Empresa</th>
@@ -697,7 +704,7 @@ HTML_TEMPLATE = """
                         </thead>
                         <tbody>
                             {% for ad in anuncios_nuevos %}
-                            <tr>
+                            <tr class="fila-nuevo-ad" data-ad-id="{{ ad.id or loop.index }}">
                                 <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
                                 <td><span class="badge badge-new"><i class="bi bi-stars"></i> Nuevo</span></td>
                                 <td>{{ ad.plataformas_html|safe }}</td>
@@ -723,7 +730,7 @@ HTML_TEMPLATE = """
                             {% else %}
                             <tr>
                                 <td colspan="7" class="text-center py-5 text-muted">
-                                    <i class="bi bi-check2-circle fs-2 d-block mb-2 text-success"></i> No se han detectado nuevos anuncios en las últimas 48 horas.
+                                    <i class="bi bi-check2-circle fs-2 d-block mb-2 text-success"></i> No hay anuncios nuevos pendientes de revisión.
                                 </td>
                             </tr>
                             {% endfor %}
@@ -805,7 +812,40 @@ HTML_TEMPLATE = """
     }
     updateThemeUI(getTheme());
 
-    // Barra de Progreso Integrada Debajo del Recuadro de Sincronización
+    // Función para marcar como vistos los anuncios
+    function marcarTodosVistos() {
+        const container = document.getElementById('nuevosContainer');
+        const btn = document.getElementById('btnMarcarVistos');
+        const kpi = document.getElementById('kpiNuevosCount');
+        const tabBadge = document.getElementById('tabNuevosBadge');
+
+        if (container) {
+            container.innerHTML = `
+                <div class="text-center py-5 text-muted">
+                    <i class="bi bi-check2-circle fs-1 d-block mb-2 text-success"></i>
+                    <h6 class="fw-bold">¡Todo al día!</h6>
+                    <p class="small text-muted mb-0">Has marcado todos los anuncios nuevos como revisados.</p>
+                </div>
+            `;
+        }
+
+        if (btn) btn.style.display = 'none';
+        if (kpi) kpi.innerText = '0';
+        if (tabBadge) tabBadge.style.display = 'none';
+        localStorage.setItem('todos_anuncios_vistos', 'true');
+    }
+
+    // Comprobar si ya se marcaron como vistos en esta sesión
+    if (localStorage.getItem('todos_anuncios_vistos') === 'true') {
+        const btn = document.getElementById('btnMarcarVistos');
+        const kpi = document.getElementById('kpiNuevosCount');
+        const tabBadge = document.getElementById('tabNuevosBadge');
+        if (btn) btn.style.display = 'none';
+        if (kpi) kpi.innerText = '0';
+        if (tabBadge) tabBadge.style.display = 'none';
+    }
+
+    // Barra de Progreso con Cuenta Regresiva de Tiempo (ETA)
     function startInlineScraping(event) {
         event.preventDefault();
         
@@ -815,37 +855,49 @@ HTML_TEMPLATE = """
         const wrapper = document.getElementById('inlineProgressWrapper');
         const bar = document.getElementById('inlineProgressBar');
         const status = document.getElementById('inlineProgressStatus');
-        const pctText = document.getElementById('inlineProgressPct');
+        const etaText = document.getElementById('inlineProgressETA');
 
         btn.disabled = true;
         select.disabled = true;
         icon.classList.add('spinner-border', 'spinner-border-sm', 'border-0');
         wrapper.classList.remove('d-none');
+        localStorage.removeItem('todos_anuncios_vistos');
 
-        let pct = 10;
-        const interval = setInterval(() => {
-            if (pct < 90) {
-                pct += Math.floor(Math.random() * 12) + 5;
-                if (pct > 90) pct = 90;
-                bar.style.width = pct + '%';
-                pctText.innerText = pct + '%';
+        const dias = parseInt(select.value) || 30;
+        let totalSeconds = dias <= 7 ? 12 : (dias <= 15 ? 18 : (dias <= 30 ? 25 : 35));
+        let remainingSeconds = totalSeconds;
+        let elapsed = 0;
 
-                if (pct > 25 && pct <= 55) {
-                    status.innerText = 'Conectando con GitHub...';
-                } else if (pct > 55) {
-                    status.innerText = 'Iniciando scraping...';
-                }
+        etaText.innerText = `${remainingSeconds}s restantes`;
+        bar.style.width = '10%';
+
+        const timer = setInterval(() => {
+            elapsed += 1;
+            remainingSeconds = Math.max(1, totalSeconds - elapsed);
+            
+            let pct = Math.min(92, Math.floor((elapsed / totalSeconds) * 100));
+            bar.style.width = pct + '%';
+            etaText.innerText = `${remainingSeconds}s restantes`;
+
+            if (pct < 30) {
+                status.innerText = 'Conectando con Meta Ads...';
+            } else if (pct < 65) {
+                status.innerText = 'Scrapeando creatividades...';
+            } else {
+                status.innerText = 'Sincronizando Base de Datos...';
             }
-        }, 250);
 
-        setTimeout(() => {
-            clearInterval(interval);
-            bar.style.width = '100%';
-            pctText.innerText = '100%';
-            status.innerText = '¡Enviado a procesar!';
-            select.disabled = false;
-            document.getElementById('scraperForm').submit();
-        }, 1800);
+            if (elapsed >= totalSeconds - 1) {
+                clearInterval(timer);
+                bar.style.width = '100%';
+                etaText.innerText = '¡Finalizado!';
+                status.innerText = 'Actualizando vista...';
+                select.disabled = false;
+                setTimeout(() => {
+                    document.getElementById('scraperForm').submit();
+                }, 600);
+            }
+        }, 1000);
     }
 
     const rawTimelineData = {{ timeline_data|tojson }};
@@ -1207,7 +1259,7 @@ def lanzar_scraper():
     try:
         response = requests.post(url_api, json=payload, headers=headers, timeout=10)
         if response.status_code == 204:
-            return redirect(url_for('index', msg=f"🚀 Scraping iniciado en GitHub Actions ({dias} días). Los datos se actualizarán en minutos."))
+            return redirect(url_for('index', msg=f"🚀 Scraping iniciado en GitHub Actions ({dias} días). Los datos se actualizarán en breve."))
         else:
             return redirect(url_for('index', msg=f"⚠️ GitHub respondió con código {response.status_code}: {response.text}"))
     except Exception as e:
