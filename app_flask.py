@@ -83,7 +83,6 @@ def init_config_tables():
 
 init_config_tables()
 
-# Lectura y escritura directa de urls.txt en GitHub
 def get_github_urls_file():
     """Descarga y decodifica urls.txt desde el repositorio de GitHub."""
     if not GITHUB_TOKEN or not GITHUB_REPO:
@@ -330,16 +329,32 @@ HTML_TEMPLATE = """
             50% { opacity: 0.6; }
             100% { opacity: 1; }
         }
-        .dropdown { position: relative; }
+        /* Corrección definitiva de colores y tema para el menú desplegable */
+        .card-filter-container {
+            position: relative;
+            z-index: 50;
+            overflow: visible !important;
+        }
+        .dropdown {
+            position: relative;
+            overflow: visible !important;
+        }
         .dropdown-menu {
-            z-index: 1060 !important;
+            position: absolute !important;
+            z-index: 9999 !important;
             background-color: var(--card-bg) !important;
             color: var(--text-main) !important;
             border: 1px solid var(--border-color) !important;
-            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2) !important;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3) !important;
+        }
+        .dropdown-item {
+            color: var(--text-main) !important;
+        }
+        .dropdown-item:hover {
+            background-color: rgba(100, 116, 139, 0.15) !important;
+            color: var(--text-main) !important;
         }
         .dropdown-menu-scroll { max-height: 250px; overflow-y: auto; }
-        .card-filter-container { position: relative; z-index: 20; }
         .sync-container { min-width: 230px; }
         .progress-inline {
             height: 5px;
@@ -359,7 +374,7 @@ HTML_TEMPLATE = """
         </a>
         <div class="d-flex align-items-center gap-2 ms-auto">
             
-            <!-- Botón URLs de Búsqueda (Archivo urls.txt) -->
+            <!-- Botón URLs de Búsqueda -->
             <button class="btn btn-sm btn-outline-light d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalConfigUrls">
                 <i class="bi bi-file-earmark-code fs-6"></i> urls.txt ({{ config_urls|length }})
             </button>
@@ -440,7 +455,6 @@ HTML_TEMPLATE = """
                     </div>
                 </form>
 
-                <!-- Vista Previa de Empresas Configuradas -->
                 <h6 class="fw-bold mt-4 mb-2 small text-uppercase text-muted">Vista Previa de Empresas en urls.txt</h6>
                 <div class="table-responsive" style="max-height: 180px; overflow-y: auto;">
                     <table class="table table-sm table-hover align-middle mb-0">
@@ -575,7 +589,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Panel de Filtros (Fila completa con todos los selectores) -->
+    <!-- Panel de Filtros -->
     <div class="card-custom p-3 mb-4 card-filter-container">
         <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end">
             <!-- 1. Buscar -->
