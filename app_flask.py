@@ -435,7 +435,7 @@ HTML_TEMPLATE = """
                     <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-3 bg-dark text-light border-secondary" rows="10" placeholder="A2Venezuela | https://www.facebook.com/ads/library/?...&#10;Bitnetwork | https://www.facebook.com/ads/library/?...&#10;Fina Partner | https://www.facebook.com/ads/library/?...">{{ raw_urls_content }}</textarea>
                     
                     <div class="d-flex justify-content-between align-items-center">
-                        <small class="text-secondary"><i class="bi bi-github"></i> Se guardará y sincronizará directamente con el archivo <code>urls.txt</code> de tu repositorio.</small>
+                        <small class="text-secondary"><i class="bi bi-github"></i> Se sincronizará directamente con el archivo <code>urls.txt</code> de tu repositorio.</small>
                         <button type="submit" class="btn btn-sm btn-primary px-3"><i class="bi bi-cloud-arrow-up"></i> Guardar en GitHub</button>
                     </div>
                 </form>
@@ -575,24 +575,25 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Panel de Filtros -->
+    <!-- Panel de Filtros (Fila completa con todos los selectores) -->
     <div class="card-custom p-3 mb-4 card-filter-container">
         <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end">
-            <div class="col-md-3">
+            <!-- 1. Buscar -->
+            <div class="col-md-4 col-lg-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-search"></i> Buscar</label>
-                <input type="text" name="q" class="form-control form-control-sm" placeholder="Texto, título, link..." value="{{ request.args.get('q', '') }}">
+                <input type="text" name="q" class="form-control form-control-sm" placeholder="Texto, link..." value="{{ request.args.get('q', '') }}">
             </div>
 
-            <!-- Filtro Selección Múltiple Compañías -->
-            <div class="col-md-3">
-                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-building"></i> Compañías ({% if companias_sel %}{{ companias_sel|length }} selec.{% else %}Todas{% endif %})</label>
+            <!-- 2. Selección Múltiple Compañías -->
+            <div class="col-md-4 col-lg-2">
+                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-building"></i> Compañías ({% if companias_sel %}{{ companias_sel|length }}{% else %}Todas{% endif %})</label>
                 <div class="dropdown">
                     <button class="btn btn-sm btn-outline-secondary w-100 text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
                         <span class="text-truncate">
                             {% if companias_sel %}
                                 {{ companias_sel|join(', ') }}
                             {% else %}
-                                Todas las compañías ({{ lista_companias|length }})
+                                Todas ({{ lista_companias|length }})
                             {% endif %}
                         </span>
                         <i class="bi bi-chevron-down ms-1"></i>
@@ -600,7 +601,7 @@ HTML_TEMPLATE = """
                     <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow-lg">
                         <div class="form-check pb-1 mb-1 border-bottom">
                             <input class="form-check-input" type="checkbox" id="selectAllCompanies" onchange="toggleAllCompanies(this)">
-                            <label class="form-check-label small fw-bold" for="selectAllCompanies">Seleccionar / Deseleccionar Todo</label>
+                            <label class="form-check-label small fw-bold" for="selectAllCompanies">Seleccionar Todo</label>
                         </div>
                         {% for comp in lista_companias %}
                         <div class="form-check">
@@ -612,20 +613,30 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- Filtro Plataforma -->
-            <div class="col-md-2">
+            <!-- 3. Filtro Estado -->
+            <div class="col-md-4 col-lg-2">
+                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-toggle-on"></i> Estado</label>
+                <select name="estado" class="form-select form-select-sm">
+                    <option value="">Todos</option>
+                    <option value="Activo" {% if request.args.get('estado') == 'Activo' %}selected{% endif %}>Activo</option>
+                    <option value="Inactivo" {% if request.args.get('estado') == 'Inactivo' %}selected{% endif %}>Inactivo</option>
+                </select>
+            </div>
+
+            <!-- 4. Filtro Plataforma -->
+            <div class="col-md-4 col-lg-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-share"></i> Plataforma</label>
                 <select name="plataforma" class="form-select form-select-sm">
                     <option value="">Todas</option>
                     <option value="facebook" {% if request.args.get('plataforma') == 'facebook' %}selected{% endif %}>Facebook</option>
                     <option value="instagram" {% if request.args.get('plataforma') == 'instagram' %}selected{% endif %}>Instagram</option>
                     <option value="messenger" {% if request.args.get('plataforma') == 'messenger' %}selected{% endif %}>Messenger</option>
-                    <option value="audience" {% if request.args.get('plataforma') == 'audience' %}selected{% endif %}>Audience Network</option>
+                    <option value="audience" {% if request.args.get('plataforma') == 'audience' %}selected{% endif %}>Audience Net.</option>
                 </select>
             </div>
 
-            <!-- Filtro Formato -->
-            <div class="col-md-2">
+            <!-- 5. Filtro Formato -->
+            <div class="col-md-4 col-lg-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-play-circle"></i> Formato</label>
                 <select name="formato" class="form-select form-select-sm">
                     <option value="">Todos</option>
@@ -634,10 +645,11 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
-            <div class="col-md-2 d-flex gap-2">
+            <!-- 6. Botones de Acción -->
+            <div class="col-md-4 col-lg-2 d-flex gap-1">
                 <button type="submit" class="btn btn-sm btn-primary w-100"><i class="bi bi-funnel"></i> Filtrar</button>
-                <a href="/" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-counterclockwise"></i></a>
-                <a href="/descargar_excel?{{ request.query_string.decode() }}" class="btn btn-sm btn-success text-nowrap"><i class="bi bi-file-earmark-excel"></i> Exportar</a>
+                <a href="/" class="btn btn-sm btn-outline-secondary" title="Limpiar filtros"><i class="bi bi-arrow-counterclockwise"></i></a>
+                <a href="/descargar_excel?{{ request.query_string.decode() }}" class="btn btn-sm btn-success text-nowrap" title="Descargar Excel"><i class="bi bi-file-earmark-excel"></i></a>
             </div>
         </form>
     </div>
@@ -1279,7 +1291,6 @@ def index():
     formato = request.args.get('formato', '').strip()
     plataforma = request.args.get('plataforma', '').strip()
 
-    # Lectura de urls.txt directamente desde GitHub
     raw_urls_content, _ = get_github_urls_file()
     config_urls = parse_urls_txt(raw_urls_content)
 
