@@ -240,7 +240,6 @@ HTML_TEMPLATE = """
             50% { opacity: 0.6; }
             100% { opacity: 1; }
         }
-        /* Corrección de superposición en Menús Desplegables */
         .dropdown {
             position: relative;
         }
@@ -314,10 +313,10 @@ HTML_TEMPLATE = """
     </div>
     {% endif %}
 
-    <!-- KPIs -->
+    <!-- KPIs (5 Métricas Clave) -->
     <div class="row g-3 mb-4">
-        <div class="col-6 col-lg-3">
-            <div class="card-custom p-3">
+        <div class="col-6 col-md-4 col-xl">
+            <div class="card-custom p-3 h-100">
                 <div class="d-flex justify-content-between align-items-center">
                     <span class="stat-label">Total Anuncios</span>
                     <i class="bi bi-collection-play text-primary fs-5"></i>
@@ -325,26 +324,35 @@ HTML_TEMPLATE = """
                 <div class="stat-value">{{ total_anuncios }}</div>
             </div>
         </div>
-        <div class="col-6 col-lg-3">
-            <div class="card-custom p-3">
+        <div class="col-6 col-md-4 col-xl">
+            <div class="card-custom p-3 h-100">
                 <div class="d-flex justify-content-between align-items-center">
-                    <span class="stat-label">Winning Ads (Activos +30d)</span>
+                    <span class="stat-label">Winning Ads</span>
                     <i class="bi bi-fire text-danger fs-5"></i>
                 </div>
                 <div class="stat-value text-danger">{{ total_winning }}</div>
             </div>
         </div>
-        <div class="col-6 col-lg-3">
-            <div class="card-custom p-3">
+        <div class="col-6 col-md-4 col-xl">
+            <div class="card-custom p-3 h-100">
                 <div class="d-flex justify-content-between align-items-center">
                     <span class="stat-label">Videos</span>
                     <i class="bi bi-camera-video text-warning fs-5"></i>
                 </div>
-                <div class="stat-value">{{ total_videos }}</div>
+                <div class="stat-value text-warning">{{ total_videos }}</div>
             </div>
         </div>
-        <div class="col-6 col-lg-3">
-            <div class="card-custom p-3">
+        <div class="col-6 col-md-4 col-xl">
+            <div class="card-custom p-3 h-100">
+                <div class="d-flex justify-content-between align-items-center">
+                    <span class="stat-label">Fotos / Imágenes</span>
+                    <i class="bi bi-image text-success fs-5"></i>
+                </div>
+                <div class="stat-value text-success">{{ total_fotos }}</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-4 col-xl">
+            <div class="card-custom p-3 h-100">
                 <div class="d-flex justify-content-between align-items-center">
                     <span class="stat-label">Nuevos (48h)</span>
                     <i class="bi bi-stars text-info fs-5"></i>
