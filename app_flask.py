@@ -21,6 +21,15 @@ WORKFLOW_FILE = "scraper.yml"
 
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "UnaClaveMuySegura2026")
 
+# Diccionario de meses en español para normalización
+MESES_DICT = {
+    'ene': '01', 'feb': '02', 'mar': '03', 'abr': '04', 'may': '05', 'jun': '06',
+    'jul': '07', 'ago': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dic': '12',
+    'enero': '01', 'febrero': '02', 'marzo': '03', 'abril': '04', 'mayo': '05', 'junio': '06',
+    'julio': '07', 'agosto': '08', 'septiembre': '09', 'octubre': '10', 'noviembre': '11', 'diciembre': '12',
+    'jan': '01', 'apr': '04', 'aug': '08', 'dec': '12'
+}
+
 # Palabras comunes a ignorar en el análisis de términos
 STOPWORDS_ES = {
     'de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 
@@ -32,8 +41,7 @@ STOPWORDS_ES = {
     'quienes', 'nada', 'muchos', 'cual', 'sea', 'poco', 'ella', 'estar', 'estas', 'estás', 'algunas', 'algo', 
     'nosotros', 'mi', 'mis', 'tu', 'tus', 'te', 'ti', 'aquí', 'solo', 'cada', 'ahora', 'mas', 'si',
     'http', 'https', 'com', 'www', 'meta', 'ads', 'click', 'link',
-    # Filtros personalizados
-    'fina', 'orden'
+    'fina', 'orden', 'venezuela'
 }
 
 def login_required(f):
@@ -53,17 +61,33 @@ def get_db_connection():
         url = f"{url}{sep}sslmode=require"
     return psycopg2.connect(url)
 
-def parse_date_str(val):
+def parse_date_str(val, fallback_val=None):
+    """Convierte cualquier formato de fecha de Meta Ads a YYYY-MM-DD."""
+    if not val and fallback_val:
+        val = fallback_val
     if not val:
         return None
-    s = str(val).strip()
-    match_iso = re.search(r'\b(\d{4}[-/]\d{1,2}[-/]\d{1,2})\b', s)
-    if match_iso:
-        return match_iso.group(1).replace('/', '-')
-    match_lat = re.search(r'\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b', s)
-    if match_lat:
-        d, m, y = match_lat.groups()
+    s = str(val).lower().strip()
+
+    # 1. Formato textual de Meta (Ej: "15 ago 2024", "Inició a publicarse el 12 de agosto de 2024")
+    m_txt = re.search(r'(\d{1,2})\s+(?:de\s+)?([a-z]{3,10})\s+(?:de\s+)?(\d{4})', s)
+    if m_txt:
+        d, mes_str, y = m_txt.groups()
+        mes_num = MESES_DICT.get(mes_str[:3], MESES_DICT.get(mes_str, '01'))
+        return f"{y}-{mes_num}-{int(d):02d}"
+
+    # 2. Formato ISO YYYY-MM-DD
+    m_iso = re.search(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})', s)
+    if m_iso:
+        y, m, d = m_iso.groups()
         return f"{y}-{int(m):02d}-{int(d):02d}"
+
+    # 3. Formato Latino DD/MM/YYYY
+    m_lat = re.search(r'(\d{1,2})[-/](\d{1,2})[-/](\d{4})', s)
+    if m_lat:
+        d, m, y = m_lat.groups()
+        return f"{y}-{int(m):02d}-{int(d):02d}"
+
     return s[:10] if len(s) >= 10 else None
 
 LOGIN_TEMPLATE = """
@@ -597,12 +621,18 @@ HTML_TEMPLATE = """
     const keywordsData = {{ keywords_chart_data|tojson }};
 
     // 1. Gráfico de Líneas (Tendencias)
-    if (document.getElementById('timelineChart') && timelineData.labels && timelineData.labels.length > 0) {
+    if (document.getElementById('timelineChart')) {
+        const labels = timelineData.labels || [];
+        const datasets = timelineData.datasets || [];
         new Chart(document.getElementById('timelineChart'), {
             type: 'line',
             data: {
-                labels: timelineData.labels,
-                datasets: timelineData.datasets
+                labels: labels.length > 0 ? labels : ['Sin fechas registradas'],
+                datasets: datasets.length > 0 ? datasets : [{
+                    label: 'Sin datos',
+                    data: [0],
+                    borderColor: '#94a3b8'
+                }]
             },
             options: {
                 responsive: true,
@@ -737,12 +767,12 @@ def index():
                     query += " AND formato ILIKE %s"
                     params.append(f"%{formato}%")
 
-                query += " ORDER BY fecha_inicio DESC NULLS LAST, id DESC LIMIT 1000"
+                query += " ORDER BY id DESC LIMIT 1000"
                 cur.execute(query, tuple(params))
                 anuncios = cur.fetchall()
 
                 limite_reciente = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
-                cur.execute("SELECT * FROM anuncios WHERE fecha_inicio >= %s ORDER BY fecha_inicio DESC LIMIT 100", (limite_reciente,))
+                cur.execute("SELECT * FROM anuncios WHERE (fecha_inicio >= %s OR fecha_registro >= %s) ORDER BY id DESC LIMIT 100", (limite_reciente, limite_reciente))
                 anuncios_nuevos = cur.fetchall()
         except Exception as e:
             print(f"Error consultando BD: {e}")
@@ -762,12 +792,23 @@ def index():
     pct_imagenes = round((total_fotos / total_anuncios * 100), 1) if total_anuncios > 0 else 0
     pct_otros = round((total_otros / total_anuncios * 100), 1) if total_anuncios > 0 else 0
 
-    # Extracción de Palabras Clave
+    # 1. Extracción y Exclusión Dinámica de Palabras Clave
+    # Obtenemos todas las palabras que componen los nombres de las empresas
+    palabras_empresas = set()
+    for comp in lista_companias:
+        if comp:
+            tokens = re.findall(r'[a-záéíóúñ0-9]+', comp.lower())
+            for t in tokens:
+                palabras_empresas.add(t)
+
     palabras_encontradas = []
     for a in anuncios:
         texto_completo = f"{a.get('texto') or ''} {a.get('titulo') or ''}".lower()
         palabras = re.findall(r'[a-záéíóúñ]{4,}', texto_completo)
-        palabras_limpias = [p for p in palabras if p not in STOPWORDS_ES]
+        palabras_limpias = [
+            p for p in palabras 
+            if p not in STOPWORDS_ES and p not in palabras_empresas
+        ]
         palabras_encontradas.extend(palabras_limpias)
 
     contador_palabras = Counter(palabras_encontradas)
@@ -778,10 +819,10 @@ def index():
         "values": [p[1] for p in top_palabras]
     }
 
-    # Procesamiento y Normalización de Fechas para el Gráfico de Líneas
+    # 2. Procesamiento de Fechas para Gráfico de Tendencias
     timeline_dict = {}
     for a in anuncios:
-        f_norm = parse_date_str(a.get('fecha_inicio'))
+        f_norm = parse_date_str(a.get('fecha_inicio'), a.get('fecha_registro'))
         if f_norm:
             comp = a.get('compania', 'Otras')
             if f_norm not in timeline_dict:
@@ -890,7 +931,7 @@ def descargar_excel():
             query += " AND formato ILIKE %s"
             params.append(f"%{formato}%")
 
-        query += " ORDER BY fecha_inicio DESC NULLS LAST"
+        query += " ORDER BY id DESC"
 
         df = pd.read_sql_query(query, conn, params=params)
         output = io.BytesIO()
