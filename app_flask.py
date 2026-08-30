@@ -1,7 +1,7 @@
 import os
 import io
 import re
-import json
+import base64
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -18,6 +18,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 WORKFLOW_FILE = "scraper.yml"
+URLS_FILE_PATH = "urls.txt"
 
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "UnaClaveMuySegura2026")
 
@@ -62,7 +63,7 @@ def get_db_connection():
     return psycopg2.connect(url)
 
 def init_config_tables():
-    """Crea las tablas de configuración en Neon si no existen."""
+    """Crea la tabla de compañías bloqueadas en Neon si no existe."""
     conn = get_db_connection()
     if conn:
         try:
@@ -74,15 +75,6 @@ def init_config_tables():
                         fecha_bloqueo TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS config_urls (
-                        id SERIAL PRIMARY KEY,
-                        nombre VARCHAR(255) NOT NULL,
-                        url TEXT NOT NULL,
-                        activo BOOLEAN DEFAULT TRUE,
-                        fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                """)
                 conn.commit()
         except Exception as e:
             print(f"Error inicializando tablas: {e}")
@@ -90,6 +82,75 @@ def init_config_tables():
             conn.close()
 
 init_config_tables()
+
+# Lectura y escritura directa de urls.txt en GitHub
+def get_github_urls_file():
+    """Descarga y decodifica urls.txt desde el repositorio de GitHub."""
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return "", None
+    url_api = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{URLS_FILE_PATH}"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    try:
+        r = requests.get(url_api, headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            content = base64.b64decode(data['content']).decode('utf-8')
+            return content, data.get('sha')
+        return "", None
+    except Exception as e:
+        print(f"Error leyendo urls.txt en GitHub: {e}")
+        return "", None
+
+def update_github_urls_file(new_content, commit_message="Actualizar urls.txt desde Dashboard"):
+    """Guarda y commitea el nuevo contenido de urls.txt en GitHub."""
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return False, "Falta configurar GITHUB_TOKEN o GITHUB_REPO."
+    
+    current_content, sha = get_github_urls_file()
+    url_api = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{URLS_FILE_PATH}"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    encoded_content = base64.b64encode(new_content.encode('utf-8')).decode('utf-8')
+    
+    payload = {
+        "message": commit_message,
+        "content": encoded_content
+    }
+    if sha:
+        payload["sha"] = sha
+
+    try:
+        r = requests.put(url_api, json=payload, headers=headers, timeout=10)
+        if r.status_code in [200, 201]:
+            return True, "Archivo urls.txt actualizado en GitHub exitosamente."
+        else:
+            return False, f"GitHub respondió con error {r.status_code}: {r.text}"
+    except Exception as e:
+        return False, f"Error conectando con GitHub: {e}"
+
+def parse_urls_txt(raw_text):
+    """Parsea el texto con formato: Nombre de la empresa | URL"""
+    items = []
+    if not raw_text:
+        return items
+    for idx, line in enumerate(raw_text.strip().splitlines()):
+        line_clean = line.strip()
+        if not line_clean or line_clean.startswith('#'):
+            continue
+        if '|' in line_clean:
+            parts = line_clean.split('|', 1)
+            nombre = parts[0].strip()
+            url = parts[1].strip()
+            if nombre and url:
+                items.append({'id': idx, 'nombre': nombre, 'url': url})
+        else:
+            items.append({'id': idx, 'nombre': 'URL de Búsqueda', 'url': line_clean})
+    return items
 
 def extraer_fecha_anuncio(ad):
     posibles_claves = ['fecha_subida', 'fecha_inicio', 'fecha', 'fecha_publicacion', 'fecha_comienzo', 'start_date']
@@ -298,9 +359,9 @@ HTML_TEMPLATE = """
         </a>
         <div class="d-flex align-items-center gap-2 ms-auto">
             
-            <!-- Botón URLs de Búsqueda -->
+            <!-- Botón URLs de Búsqueda (Archivo urls.txt) -->
             <button class="btn btn-sm btn-outline-light d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalConfigUrls">
-                <i class="bi bi-link-45deg fs-6"></i> URLs de Búsqueda ({{ config_urls|length }})
+                <i class="bi bi-file-earmark-code fs-6"></i> urls.txt ({{ config_urls|length }})
             </button>
 
             <!-- Botón Compañías Bloqueadas -->
@@ -356,60 +417,52 @@ HTML_TEMPLATE = """
     </div>
 </nav>
 
-<!-- Modal: URLs de Búsqueda (Con Soporte Empresa | URL) -->
+<!-- Modal: Editor urls.txt en GitHub -->
 <div class="modal fade" id="modalConfigUrls" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content card-custom">
             <div class="modal-header border-secondary border-opacity-25">
-                <h5 class="modal-title fw-bold"><i class="bi bi-link-45deg text-primary"></i> Configurar URLs de Búsqueda</h5>
+                <h5 class="modal-title fw-bold"><i class="bi bi-file-earmark-text text-primary"></i> Editor de urls.txt (GitHub)</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body p-4">
-                
-                <!-- Carga en lote en formato Empresa | URL -->
-                <div class="card-custom p-3 mb-4 bg-body-tertiary">
-                    <h6 class="fw-bold mb-1 small text-uppercase text-muted">Pegar Lista Completa (Formato: Nombre | URL)</h6>
-                    <p class="small text-muted mb-2">Pega varias URLs a la vez, una por línea separadas por una barra vertical <code>|</code></p>
-                    <form action="/guardar_urls_lote" method="POST">
-                        <textarea name="lista_urls" class="form-control form-control-sm font-monospace mb-2" rows="4" placeholder="Ejemplo:&#10;Saint Software | https://www.facebook.com/ads/library/?...&#10;Fina Partner | https://www.facebook.com/ads/library/?..."></textarea>
-                        <div class="d-flex justify-content-between align-items-center">
-                            <small class="text-secondary">Se procesarán todas las líneas válidas automáticamente.</small>
-                            <button type="submit" class="btn btn-sm btn-success"><i class="bi bi-upload"></i> Guardar Lista</button>
-                        </div>
-                    </form>
-                </div>
+                <form action="/guardar_urls_txt" method="POST">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="small text-muted">Edita o agrega líneas con el formato <code>Nombre de la Empresa | URL</code></span>
+                        <span class="badge bg-secondary-subtle text-secondary">{{ config_urls|length }} enlaces detectados</span>
+                    </div>
+                    
+                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-3 bg-dark text-light border-secondary" rows="10" placeholder="A2Venezuela | https://www.facebook.com/ads/library/?...&#10;Bitnetwork | https://www.facebook.com/ads/library/?...&#10;Fina Partner | https://www.facebook.com/ads/library/?...">{{ raw_urls_content }}</textarea>
+                    
+                    <div class="d-flex justify-content-between align-items-center">
+                        <small class="text-secondary"><i class="bi bi-github"></i> Se guardará y sincronizará directamente con el archivo <code>urls.txt</code> de tu repositorio.</small>
+                        <button type="submit" class="btn btn-sm btn-primary px-3"><i class="bi bi-cloud-arrow-up"></i> Guardar en GitHub</button>
+                    </div>
+                </form>
 
-                <!-- Listado de URLs Registradas -->
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <h6 class="fw-bold m-0 small text-uppercase text-muted">URLs Activas en la Base de Datos ({{ config_urls|length }})</h6>
-                </div>
-                <div class="table-responsive">
+                <!-- Vista Previa de Empresas Configuradas -->
+                <h6 class="fw-bold mt-4 mb-2 small text-uppercase text-muted">Vista Previa de Empresas en urls.txt</h6>
+                <div class="table-responsive" style="max-height: 180px; overflow-y: auto;">
                     <table class="table table-sm table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr class="small text-muted">
-                                <th>Nombre / Empresa</th>
+                                <th>#</th>
+                                <th>Empresa</th>
                                 <th>URL de Búsqueda</th>
-                                <th class="text-end">Acción</th>
                             </tr>
                         </thead>
                         <tbody>
                             {% for u in config_urls %}
                             <tr>
+                                <td class="text-muted small">{{ loop.index }}</td>
                                 <td class="fw-bold">{{ u.nombre }}</td>
-                                <td class="small text-truncate" style="max-width: 380px;">
+                                <td class="small text-truncate" style="max-width: 420px;">
                                     <a href="{{ u.url }}" target="_blank" class="text-decoration-none text-info">{{ u.url }}</a>
-                                </td>
-                                <td class="text-end">
-                                    <form action="/eliminar_url/{{ u.id }}" method="POST" class="d-inline" onsubmit="return confirm('¿Eliminar esta URL?');">
-                                        <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Eliminar URL">
-                                            <i class="bi bi-trash"></i>
-                                        </button>
-                                    </form>
                                 </td>
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="3" class="text-center py-4 text-muted small">No hay URLs registradas en Neon. Pega tu lista arriba para guardarlas.</td>
+                                <td colspan="3" class="text-center py-3 text-muted small">No hay URLs configuradas en urls.txt.</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -1226,20 +1279,20 @@ def index():
     formato = request.args.get('formato', '').strip()
     plataforma = request.args.get('plataforma', '').strip()
 
+    # Lectura de urls.txt directamente desde GitHub
+    raw_urls_content, _ = get_github_urls_file()
+    config_urls = parse_urls_txt(raw_urls_content)
+
     conn = get_db_connection()
     anuncios = []
     lista_companias = []
     companias_bloqueadas = []
-    config_urls = []
 
     if conn:
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("SELECT compania FROM companias_bloqueadas ORDER BY compania ASC")
                 companias_bloqueadas = [r['compania'] for r in cur.fetchall()]
-
-                cur.execute("SELECT * FROM config_urls ORDER BY id DESC")
-                config_urls = cur.fetchall()
 
                 if companias_bloqueadas:
                     cur.execute("""
@@ -1395,6 +1448,7 @@ def index():
         lista_companias=lista_companias,
         companias_bloqueadas=companias_bloqueadas,
         config_urls=config_urls,
+        raw_urls_content=raw_urls_content,
         companias_sel=companias_sel,
         total_anuncios=total_anuncios,
         total_companias=total_companias,
@@ -1409,51 +1463,15 @@ def index():
         msg=msg
     )
 
-@app.route('/guardar_urls_lote', methods=['POST'])
+@app.route('/guardar_urls_txt', methods=['POST'])
 @login_required
-def guardar_urls_lote():
-    texto_lote = request.form.get('lista_urls', '').strip()
-    if not texto_lote:
-        return redirect(url_for('index', msg="⚠️ El cuadro de texto estaba vacío."))
-
-    lineas = texto_lote.split('\n')
-    insertados = 0
-
-    conn = get_db_connection()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                for l in lineas:
-                    l = l.strip()
-                    if '|' in l:
-                        partes = l.split('|', 1)
-                        nombre = partes[0].strip()
-                        url = partes[1].strip()
-                        if nombre and url:
-                            cur.execute("INSERT INTO config_urls (nombre, url) VALUES (%s, %s)", (nombre, url))
-                            insertados += 1
-                conn.commit()
-        except Exception as e:
-            print(f"Error guardando lote de URLs: {e}")
-        finally:
-            conn.close()
-
-    return redirect(url_for('index', msg=f"✅ Se guardaron {insertados} URLs correctamente en la base de datos."))
-
-@app.route('/eliminar_url/<int:url_id>', methods=['POST'])
-@login_required
-def eliminar_url(url_id):
-    conn = get_db_connection()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM config_urls WHERE id = %s", (url_id,))
-                conn.commit()
-        except Exception as e:
-            print(f"Error eliminando URL: {e}")
-        finally:
-            conn.close()
-    return redirect(url_for('index', msg="🗑️ URL de búsqueda eliminada."))
+def guardar_urls_txt():
+    raw_urls = request.form.get('raw_urls', '').strip()
+    success, message = update_github_urls_file(raw_urls)
+    if success:
+        return redirect(url_for('index', msg="✅ Archivo urls.txt guardado en GitHub exitosamente."))
+    else:
+        return redirect(url_for('index', msg=f"❌ {message}"))
 
 @app.route('/bloquear_compania', methods=['POST'])
 @login_required
