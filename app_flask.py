@@ -32,6 +32,7 @@ MESES_DICT = {
     'jan': '01', 'apr': '04', 'aug': '08', 'dec': '12'
 }
 
+# Palabras comunes a ignorar en el análisis de términos
 STOPWORDS_ES = {
     'de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 
     'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'sí', 
@@ -42,7 +43,8 @@ STOPWORDS_ES = {
     'quienes', 'nada', 'muchos', 'cual', 'sea', 'poco', 'ella', 'estar', 'estas', 'estás', 'algunas', 'algo', 
     'nosotros', 'mi', 'mis', 'tu', 'tus', 'te', 'ti', 'aquí', 'solo', 'cada', 'ahora', 'mas', 'si',
     'http', 'https', 'com', 'www', 'meta', 'ads', 'click', 'link',
-    'fina', 'orden', 'venezuela'
+    # Filtros personalizados
+    'fina', 'orden', 'venezuela', 'andrea'
 }
 
 def login_required(f):
@@ -1034,7 +1036,6 @@ def descargar_excel():
 
         df = pd.read_sql_query(query, conn, params=params)
         
-        # Agregar columnas calculadas al Excel
         df['dias_activo'] = df.apply(lambda row: calcular_dias_activo(row.get('fecha_inicio'), row.get('fecha_registro')), axis=1)
         df['es_winning_ad'] = df['dias_activo'] >= DIAS_WINNING_AD
 
