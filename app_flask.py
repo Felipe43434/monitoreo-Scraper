@@ -21,7 +21,9 @@ WORKFLOW_FILE = "scraper.yml"
 
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "UnaClaveMuySegura2026")
 
-# Diccionario de meses en español para normalización
+# Umbral en días para considerar un anuncio como "Winning Ad"
+DIAS_WINNING_AD = 30
+
 MESES_DICT = {
     'ene': '01', 'feb': '02', 'mar': '03', 'abr': '04', 'may': '05', 'jun': '06',
     'jul': '07', 'ago': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dic': '12',
@@ -30,7 +32,6 @@ MESES_DICT = {
     'jan': '01', 'apr': '04', 'aug': '08', 'dec': '12'
 }
 
-# Palabras comunes a ignorar en el análisis de términos
 STOPWORDS_ES = {
     'de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para', 'con', 
     'no', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este', 'sí', 
@@ -62,33 +63,40 @@ def get_db_connection():
     return psycopg2.connect(url)
 
 def parse_date_str(val, fallback_val=None):
-    """Convierte cualquier formato de fecha de Meta Ads a YYYY-MM-DD."""
     if not val and fallback_val:
         val = fallback_val
     if not val:
         return None
     s = str(val).lower().strip()
 
-    # 1. Formato textual de Meta (Ej: "15 ago 2024", "Inició a publicarse el 12 de agosto de 2024")
     m_txt = re.search(r'(\d{1,2})\s+(?:de\s+)?([a-z]{3,10})\s+(?:de\s+)?(\d{4})', s)
     if m_txt:
         d, mes_str, y = m_txt.groups()
         mes_num = MESES_DICT.get(mes_str[:3], MESES_DICT.get(mes_str, '01'))
         return f"{y}-{mes_num}-{int(d):02d}"
 
-    # 2. Formato ISO YYYY-MM-DD
     m_iso = re.search(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})', s)
     if m_iso:
         y, m, d = m_iso.groups()
         return f"{y}-{int(m):02d}-{int(d):02d}"
 
-    # 3. Formato Latino DD/MM/YYYY
     m_lat = re.search(r'(\d{1,2})[-/](\d{1,2})[-/](\d{4})', s)
     if m_lat:
         d, m, y = m_lat.groups()
         return f"{y}-{int(m):02d}-{int(d):02d}"
 
     return s[:10] if len(s) >= 10 else None
+
+def calcular_dias_activo(fecha_inicio_str, fallback_str=None):
+    f_norm = parse_date_str(fecha_inicio_str, fallback_str)
+    if not f_norm:
+        return 0
+    try:
+        dt = datetime.strptime(f_norm, '%Y-%m-%d')
+        diff = (datetime.now() - dt).days
+        return max(0, diff)
+    except Exception:
+        return 0
 
 LOGIN_TEMPLATE = """
 <!DOCTYPE html>
@@ -202,6 +210,7 @@ HTML_TEMPLATE = """
         .badge-active { background-color: #10b981; color: #ffffff; }
         .badge-inactive { background-color: #64748b; color: #ffffff; }
         .badge-new { background-color: #6366f1; color: #ffffff; animation: pulse 2s infinite; }
+        .badge-winning { background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%); color: #ffffff; font-weight: 700; border: none; }
         @keyframes pulse {
             0% { opacity: 1; }
             50% { opacity: 0.6; }
@@ -280,17 +289,17 @@ HTML_TEMPLATE = """
         <div class="col-6 col-lg-3">
             <div class="card-custom p-3">
                 <div class="d-flex justify-content-between align-items-center">
-                    <span class="stat-label">Compañías</span>
-                    <i class="bi bi-building text-success fs-5"></i>
+                    <span class="stat-label">Winning Ads (+30d)</span>
+                    <i class="bi bi-fire text-danger fs-5"></i>
                 </div>
-                <div class="stat-value">{{ total_companias }}</div>
+                <div class="stat-value text-danger">{{ total_winning }}</div>
             </div>
         </div>
         <div class="col-6 col-lg-3">
             <div class="card-custom p-3">
                 <div class="d-flex justify-content-between align-items-center">
                     <span class="stat-label">Videos</span>
-                    <i class="bi bi-camera-video text-danger fs-5"></i>
+                    <i class="bi bi-camera-video text-warning fs-5"></i>
                 </div>
                 <div class="stat-value">{{ total_videos }}</div>
             </div>
@@ -299,9 +308,9 @@ HTML_TEMPLATE = """
             <div class="card-custom p-3">
                 <div class="d-flex justify-content-between align-items-center">
                     <span class="stat-label">Nuevos (48h)</span>
-                    <i class="bi bi-stars text-warning fs-5"></i>
+                    <i class="bi bi-stars text-info fs-5"></i>
                 </div>
-                <div class="stat-value text-warning">{{ total_nuevos }}</div>
+                <div class="stat-value text-info">{{ total_nuevos }}</div>
             </div>
         </div>
     </div>
@@ -380,10 +389,18 @@ HTML_TEMPLATE = """
             </button>
         </li>
         <li class="nav-item">
+            <button class="nav-link fw-semibold position-relative text-danger" data-bs-toggle="tab" data-bs-target="#tab-winning" type="button">
+                <i class="bi bi-fire"></i> Winning Ads
+                {% if total_winning > 0 %}
+                <span class="badge rounded-pill bg-danger ms-1">{{ total_winning }}</span>
+                {% endif %}
+            </button>
+        </li>
+        <li class="nav-item">
             <button class="nav-link fw-semibold position-relative" data-bs-toggle="tab" data-bs-target="#tab-new" type="button">
-                <i class="bi bi-stars text-warning"></i> Nuevos Anuncios
+                <i class="bi bi-stars text-info"></i> Nuevos Anuncios
                 {% if total_nuevos > 0 %}
-                <span class="badge rounded-pill bg-danger ms-1">{{ total_nuevos }}</span>
+                <span class="badge rounded-pill bg-info ms-1">{{ total_nuevos }}</span>
                 {% endif %}
             </button>
         </li>
@@ -442,9 +459,10 @@ HTML_TEMPLATE = """
                         <thead class="table-light">
                             <tr class="small text-muted">
                                 <th>Empresa</th>
-                                <th>Estado</th>
+                                <th>Estado / Desempeño</th>
                                 <th>Formato</th>
                                 <th>Copia / Texto</th>
+                                <th>Tiempo Activo</th>
                                 <th>Fecha Inicio</th>
                                 <th>Acción</th>
                             </tr>
@@ -454,9 +472,16 @@ HTML_TEMPLATE = """
                             <tr>
                                 <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
                                 <td>
-                                    <span class="badge {% if ad.estado == 'Activo' %}badge-active{% else %}badge-inactive{% endif %}">
-                                        {{ ad.estado or 'Desconocido' }}
-                                    </span>
+                                    <div class="d-flex flex-wrap gap-1">
+                                        <span class="badge {% if ad.estado == 'Activo' %}badge-active{% else %}badge-inactive{% endif %}">
+                                            {{ ad.estado or 'Desconocido' }}
+                                        </span>
+                                        {% if ad.es_winning %}
+                                        <span class="badge badge-winning" title="Anuncio con más de 30 días continuos activo">
+                                            🔥 Winning Ad
+                                        </span>
+                                        {% endif %}
+                                    </div>
                                 </td>
                                 <td>
                                     {% if 'video' in (ad.formato|string|lower) %}
@@ -465,8 +490,13 @@ HTML_TEMPLATE = """
                                         <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
                                     {% endif %}
                                 </td>
-                                <td class="small text-muted" style="max-width: 320px;">
+                                <td class="small text-muted" style="max-width: 300px;">
                                     {{ (ad.texto or ad.titulo or 'Sin descripción')[:120] }}{% if (ad.texto or ad.titulo or '')|length > 120 %}...{% endif %}
+                                </td>
+                                <td class="small">
+                                    <span class="fw-bold {% if ad.es_winning %}text-danger{% else %}text-muted{% endif %}">
+                                        {{ ad.dias_activo }} días
+                                    </span>
                                 </td>
                                 <td class="small">{{ ad.fecha_inicio or 'N/A' }}</td>
                                 <td>
@@ -481,7 +511,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="6" class="text-center py-5 text-muted">
+                                <td colspan="7" class="text-center py-5 text-muted">
                                     <i class="bi bi-folder-x fs-2 d-block mb-2"></i> No hay registros disponibles
                                 </td>
                             </tr>
@@ -492,7 +522,68 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Panel 3: Nuevos Anuncios -->
+        <!-- Panel 3: Winning Ads (Alto Rendimiento) -->
+        <div class="tab-pane fade" id="tab-winning">
+            <div class="card-custom overflow-hidden">
+                <div class="p-3 bg-danger bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
+                    <div>
+                        <h6 class="fw-bold text-danger mb-1"><i class="bi bi-fire"></i> Anuncios de Alto Rendimiento (Longevidad > 30 días)</h6>
+                        <p class="small text-muted mb-0">Estas campañas han superado el mes continuas en circulación, indicando alta rentabilidad.</p>
+                    </div>
+                    <span class="badge bg-danger fs-6">{{ anuncios_winning|length }} detectados</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr class="small text-muted">
+                                <th>Empresa</th>
+                                <th>Insignia</th>
+                                <th>Formato</th>
+                                <th>Texto</th>
+                                <th>Días Activo</th>
+                                <th>Fecha Inicio</th>
+                                <th>Enlace</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ad in anuncios_winning %}
+                            <tr>
+                                <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
+                                <td><span class="badge badge-winning">🔥 Winning Ad</span></td>
+                                <td>
+                                    {% if 'video' in (ad.formato|string|lower) %}
+                                        <span class="text-danger small fw-semibold"><i class="bi bi-camera-video"></i> Video</span>
+                                    {% else %}
+                                        <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
+                                    {% endif %}
+                                </td>
+                                <td class="small text-muted" style="max-width: 320px;">
+                                    {{ (ad.texto or ad.titulo or 'Sin descripción')[:140] }}
+                                </td>
+                                <td><span class="badge bg-danger-subtle text-danger fw-bold">{{ ad.dias_activo }} días</span></td>
+                                <td class="small">{{ ad.fecha_inicio or 'N/A' }}</td>
+                                <td>
+                                    {% if ad.link_individual %}
+                                    <a href="{{ ad.link_individual }}" target="_blank" class="btn btn-sm btn-primary py-0 px-2" style="font-size: 0.75rem;">
+                                        <i class="bi bi-box-arrow-up-right"></i> Ver Anuncio
+                                    </a>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="7" class="text-center py-5 text-muted">
+                                    <i class="bi bi-shield-check fs-2 d-block mb-2 text-warning"></i> No hay campañas con más de 30 días activos en los filtros actuales.
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel 4: Nuevos Anuncios -->
         <div class="tab-pane fade" id="tab-new">
             <div class="card-custom overflow-hidden">
                 <div class="table-responsive">
@@ -544,7 +635,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Panel 4: Términos Frecuentes -->
+        <!-- Panel 5: Términos Frecuentes -->
         <div class="tab-pane fade" id="tab-keywords">
             <div class="row g-3">
                 <div class="col-lg-7">
@@ -620,7 +711,6 @@ HTML_TEMPLATE = """
     const formatData = {{ format_data|tojson }};
     const keywordsData = {{ keywords_chart_data|tojson }};
 
-    // 1. Gráfico de Líneas (Tendencias)
     if (document.getElementById('timelineChart')) {
         const labels = timelineData.labels || [];
         const datasets = timelineData.datasets || [];
@@ -649,7 +739,6 @@ HTML_TEMPLATE = """
         });
     }
 
-    // 2. Gráfico de Dona con Porcentajes
     if (document.getElementById('formatChart')) {
         const totalFmt = formatData.videos + formatData.imagenes + formatData.otros;
         new Chart(document.getElementById('formatChart'), {
@@ -685,7 +774,6 @@ HTML_TEMPLATE = """
         });
     }
 
-    // 3. Gráfico de Palabras Clave
     if (document.getElementById('keywordsChart') && keywordsData.labels && keywordsData.labels.length > 0) {
         new Chart(document.getElementById('keywordsChart'), {
             type: 'bar',
@@ -780,6 +868,15 @@ def index():
         finally:
             conn.close()
 
+    # Cálculo de Días Activos y Winning Ads (+30 días)
+    anuncios_winning = []
+    for a in anuncios:
+        dias = calcular_dias_activo(a.get('fecha_inicio'), a.get('fecha_registro'))
+        a['dias_activo'] = dias
+        a['es_winning'] = dias >= DIAS_WINNING_AD
+        if a['es_winning']:
+            anuncios_winning.append(a)
+
     total_anuncios = len(anuncios)
     companias_set = {a['compania'] for a in anuncios if a.get('compania')}
     total_companias = len(companias_set)
@@ -787,13 +884,13 @@ def index():
     total_fotos = sum(1 for a in anuncios if 'imagen' in str(a.get('formato', '')).lower() or 'foto' in str(a.get('formato', '')).lower())
     total_otros = max(0, total_anuncios - (total_videos + total_fotos))
     total_nuevos = len(anuncios_nuevos)
+    total_winning = len(anuncios_winning)
 
     pct_videos = round((total_videos / total_anuncios * 100), 1) if total_anuncios > 0 else 0
     pct_imagenes = round((total_fotos / total_anuncios * 100), 1) if total_anuncios > 0 else 0
     pct_otros = round((total_otros / total_anuncios * 100), 1) if total_anuncios > 0 else 0
 
-    # 1. Extracción y Exclusión Dinámica de Palabras Clave
-    # Obtenemos todas las palabras que componen los nombres de las empresas
+    # Exclusión de palabras clave y nombres de empresas
     palabras_empresas = set()
     for comp in lista_companias:
         if comp:
@@ -819,7 +916,7 @@ def index():
         "values": [p[1] for p in top_palabras]
     }
 
-    # 2. Procesamiento de Fechas para Gráfico de Tendencias
+    # Gráfico de Tendencias
     timeline_dict = {}
     for a in anuncios:
         f_norm = parse_date_str(a.get('fecha_inicio'), a.get('fecha_registro'))
@@ -858,6 +955,7 @@ def index():
     return render_template_string(
         HTML_TEMPLATE,
         anuncios=anuncios,
+        anuncios_winning=anuncios_winning,
         anuncios_nuevos=anuncios_nuevos,
         lista_companias=lista_companias,
         companias_sel=companias_sel,
@@ -866,6 +964,7 @@ def index():
         total_videos=total_videos,
         total_fotos=total_fotos,
         total_nuevos=total_nuevos,
+        total_winning=total_winning,
         top_palabras=top_palabras,
         keywords_chart_data=keywords_chart_data,
         timeline_data=timeline_data,
@@ -914,7 +1013,7 @@ def descargar_excel():
         estado = request.args.get('estado', '').strip()
         formato = request.args.get('formato', '').strip()
 
-        query = "SELECT compania, estado, formato, texto, titulo, link_individual, fecha_inicio FROM anuncios WHERE 1=1"
+        query = "SELECT compania, estado, formato, texto, titulo, link_individual, fecha_inicio, fecha_registro FROM anuncios WHERE 1=1"
         params = []
 
         if q:
@@ -934,6 +1033,11 @@ def descargar_excel():
         query += " ORDER BY id DESC"
 
         df = pd.read_sql_query(query, conn, params=params)
+        
+        # Agregar columnas calculadas al Excel
+        df['dias_activo'] = df.apply(lambda row: calcular_dias_activo(row.get('fecha_inicio'), row.get('fecha_registro')), axis=1)
+        df['es_winning_ad'] = df['dias_activo'] >= DIAS_WINNING_AD
+
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Anuncios_Meta')
