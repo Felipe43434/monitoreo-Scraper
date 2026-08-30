@@ -474,7 +474,7 @@ HTML_TEMPLATE = """
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link fw-semibold position-relative" data-bs-toggle="tab" data-bs-target="#tab-new" type="button">
+            <button class="nav-link fw-semibold position-relative text-info" data-bs-toggle="tab" data-bs-target="#tab-new" type="button">
                 <i class="bi bi-stars text-info"></i> Nuevos Anuncios
                 <span class="badge rounded-pill bg-info ms-1" id="tabNuevosBadge" {% if total_nuevos == 0 %}style="display:none;"{% endif %}>{{ total_nuevos }}</span>
             </button>
@@ -674,7 +674,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Panel 4: Nuevos Anuncios con Botón Marcar como Vistos -->
+        <!-- Panel 4: Nuevos Anuncios -->
         <div class="tab-pane fade" id="tab-new">
             <div class="card-custom overflow-hidden">
                 <div class="p-3 bg-info bg-opacity-10 border-bottom d-flex flex-wrap align-items-center justify-content-between gap-2">
@@ -812,7 +812,6 @@ HTML_TEMPLATE = """
     }
     updateThemeUI(getTheme());
 
-    // Función para marcar como vistos los anuncios
     function marcarTodosVistos() {
         const container = document.getElementById('nuevosContainer');
         const btn = document.getElementById('btnMarcarVistos');
@@ -835,7 +834,6 @@ HTML_TEMPLATE = """
         localStorage.setItem('todos_anuncios_vistos', 'true');
     }
 
-    // Comprobar si ya se marcaron como vistos en esta sesión
     if (localStorage.getItem('todos_anuncios_vistos') === 'true') {
         const btn = document.getElementById('btnMarcarVistos');
         const kpi = document.getElementById('kpiNuevosCount');
@@ -845,7 +843,6 @@ HTML_TEMPLATE = """
         if (tabBadge) tabBadge.style.display = 'none';
     }
 
-    // Barra de Progreso con Cuenta Regresiva de Tiempo (ETA)
     function startInlineScraping(event) {
         event.preventDefault();
         
@@ -1259,11 +1256,11 @@ def lanzar_scraper():
     try:
         response = requests.post(url_api, json=payload, headers=headers, timeout=10)
         if response.status_code == 204:
-            return redirect(url_for('index', msg=f"🚀 Scraping iniciado en GitHub Actions ({dias} días). Los datos se actualizarán en breve."))
+            return redirect(url_for('index', msg="🚀 Los datos se actualizarán en breve."))
         else:
-            return redirect(url_for('index', msg=f"⚠️ GitHub respondió con código {response.status_code}: {response.text}"))
+            return redirect(url_for('index', msg=f"⚠️ Error en la solicitud (Código {response.status_code}): {response.text}"))
     except Exception as e:
-        return redirect(url_for('index', msg=f"❌ Error al conectar con GitHub Actions: {e}"))
+        return redirect(url_for('index', msg=f"❌ Error al conectar: {e}"))
 
 @app.route('/descargar_excel')
 @login_required
