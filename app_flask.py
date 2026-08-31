@@ -198,6 +198,8 @@ def render_plataformas_badges(val):
         badges.append('<span class="badge bg-primary text-light" style="font-size: 0.68rem;"><i class="bi bi-facebook"></i> Facebook</span>')
     if 'instagram' in s or 'ig' in s:
         badges.append('<span class="badge text-light" style="background: linear-gradient(45deg, #f09433, #dc2743, #bc1888); font-size: 0.68rem;"><i class="bi bi-instagram"></i> Instagram</span>')
+    if 'threads' in s or 'hilos' in s:
+        badges.append('<span class="badge bg-dark text-light border border-secondary" style="font-size: 0.68rem;"><i class="bi bi-threads"></i> Threads</span>')
     if 'messenger' in s:
         badges.append('<span class="badge bg-info text-dark" style="font-size: 0.68rem;"><i class="bi bi-messenger"></i> Messenger</span>')
     if 'audience' in s or 'network' in s:
@@ -577,7 +579,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Panel de Filtros (Con el botón de compañías estilizado idéntico a form-select) -->
+    <!-- Panel de Filtros -->
     <div class="card-custom p-3 mb-4 card-filter-container">
         <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end">
             <!-- 1. Buscar -->
@@ -586,7 +588,7 @@ HTML_TEMPLATE = """
                 <input type="text" name="q" class="form-control form-control-sm" placeholder="Texto, link..." value="{{ request.args.get('q', '') }}">
             </div>
 
-            <!-- 2. Selección Múltiple Compañías (Estilizado como form-select form-select-sm) -->
+            <!-- 2. Selección Múltiple Compañías -->
             <div class="col-md-4 col-lg-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-building"></i> Compañías ({% if companias_sel %}{{ companias_sel|length }}{% else %}Todas{% endif %})</label>
                 <div class="dropdown">
@@ -624,13 +626,14 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
-            <!-- 4. Filtro Plataforma -->
+            <!-- 4. Filtro Plataforma (Con Threads, Facebook, Instagram, Messenger, Audience Network) -->
             <div class="col-md-4 col-lg-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-share"></i> Plataforma</label>
                 <select name="plataforma" class="form-select form-select-sm">
                     <option value="">Todas</option>
                     <option value="facebook" {% if request.args.get('plataforma') == 'facebook' %}selected{% endif %}>Facebook</option>
                     <option value="instagram" {% if request.args.get('plataforma') == 'instagram' %}selected{% endif %}>Instagram</option>
+                    <option value="threads" {% if request.args.get('plataforma') == 'threads' %}selected{% endif %}>Threads</option>
                     <option value="messenger" {% if request.args.get('plataforma') == 'messenger' %}selected{% endif %}>Messenger</option>
                     <option value="audience" {% if request.args.get('plataforma') == 'audience' %}selected{% endif %}>Audience Net.</option>
                 </select>
