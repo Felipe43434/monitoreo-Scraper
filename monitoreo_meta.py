@@ -11,6 +11,12 @@ from playwright.sync_api import sync_playwright
 
 load_dotenv()
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Forzar conexión segura (requerida por Neon)
+if DATABASE_URL and "sslmode=" not in DATABASE_URL:
+    separador = "&" if "?" in DATABASE_URL else "?"
+    DATABASE_URL = f"{DATABASE_URL}{separador}sslmode=require"
+
 JSON_FILE = "anuncios_guardados.json"
 PROGRESO_FILE = "progreso.json"
 
@@ -163,7 +169,7 @@ def guardar_anuncio(anuncio, bloqueadas):
             ad_id = anuncio['link_individual'].split('id=')[-1]
 
         query = """
-            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, platforms, formato, duracion_segundos, titulo, link_individual)
+            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, plataformas, formato, duracion_segundos, titulo, link_individual)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (link_individual) DO UPDATE 
             SET id_anuncio = EXCLUDED.id_anuncio,
