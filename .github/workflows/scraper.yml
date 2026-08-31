@@ -6,7 +6,10 @@ on:
       dias:
         description: 'Días de historial a rastrear'
         required: true
-        default: '30'
+        default: '7'
+  schedule:
+    # Se ejecuta a las 00:00 UTC cada 2 días (48 horas)
+    - cron: '0 0 */2 * *'
 
 jobs:
   scrape:
@@ -30,4 +33,5 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          python monitoreo_meta.py ${{ github.event.inputs.dias }}
+          # Si se ejecuta automáticamente, usa 7 días por defecto para ahorrar recursos
+          python monitoreo_meta.py ${{ github.event.inputs.dias || '7' }}
