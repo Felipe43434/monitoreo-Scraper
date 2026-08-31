@@ -4,6 +4,7 @@ import time
 import json
 import re
 import urllib.parse
+import unicodedata
 from datetime import datetime, timedelta
 import psycopg2
 from dotenv import load_dotenv
@@ -139,7 +140,7 @@ def limpiar_texto_copy(texto, empresa):
         r'(?i)\ben\s+circulaci[oó]n\s+desde\s+(?:el\s+)?[^\n·•]+',
         r'(?i)\bstarted\s+running\s+on\s+[^\n·•]+',
         r'(?i)\b(m[aá]s\s+informaci[oó]n|enviar\s+mensaje|contactar|comprar|registrarse|descargar|solicitar|ver\s+m[aá]s|apply\s+now|learn\s+more|send\s+message|sign\s+up|shop\s+now)\b',
-        r'(?i)\b(activo|inactivo|active|inactive|sponsored|publicidad)\b'
+        r'(?i)\b(activo|inactivo|active|inactive|sponsored|publicidad|patrocinado)\b'
     ]
 
     limpio = texto
@@ -277,6 +278,11 @@ def extraer_fecha_json_profundo(obj):
                 return f
     return None
 
+def limpiar_nombre_comparacion(texto):
+    """Elimina acentos y caracteres no alfanuméricos para comparar limpiamente"""
+    texto = unicodedata.normalize('NFD', texto).encode('ascii', 'ignore').decode('utf-8')
+    return re.sub(r'[^a-z0-9]', '', texto.lower())
+
 def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
     print(f"\n🌐 Abriendo: {url_final}")
     print(f"🎯 Monitoreando: '{nombre_objetivo}'")
@@ -367,8 +373,9 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
                 estadoAnuncio = "Inactivo";
             }
 
+            // Extraemos el nombre de la empresa directo de la tarjeta
             let empresa = nombreBuscado;
-            const idxPubli = lineas.findIndex(l => l.toLowerCase() === 'publicidad' || l.toLowerCase() === 'sponsored');
+            const idxPubli = lineas.findIndex(l => /publicidad|sponsored|patrocinado/i.test(l));
             if (idxPubli > 0) {
                 empresa = lineas[idxPubli - 1];
             }
@@ -463,6 +470,7 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
                         low.includes('en circulación') || low.includes('started running') ||
                         low.includes('activo') || low.includes('inactivo') ||
                         low.includes('publicidad') || low.includes('sponsored') ||
+                        low.includes('patrocinado') ||
                         low.includes('ver detalles') || low.includes('see ad details') ||
                         low.includes('más información') || low.includes('enviar mensaje') ||
                         low.includes('plataformas') || low.includes('abrir menú') ||
@@ -501,24 +509,28 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
 
         empresa_actual = item["empresa"].strip()
         
-        # Eliminar espacios y símbolos para que variaciones coincidan
-        busq_str = re.sub(r'[\W_]', '', nombre_objetivo.lower())
-        actual_str = re.sub(r'[\W_]', '', empresa_actual.lower())
+        # FILTRO INTELIGENTE: Ignora espacios, acentos y mayúsculas
+        busq_str = limpiar_nombre_comparacion(nombre_objetivo)
+        actual_str = limpiar_nombre_comparacion(empresa_actual)
 
         coincide = False
+        # Si una cadena está dentro de la otra (Ej: "finapartner" está en "koashopconfinapartner")
         if busq_str in actual_str or actual_str in busq_str:
             coincide = True
         else:
-            # Comprobar si comparten palabras clave principales (de 4 o más letras)
-            tokens_busq = set(re.findall(r'[a-z0-9]{4,}', nombre_objetivo.lower()))
-            tokens_actual = set(re.findall(r'[a-z0-9]{4,}', empresa_actual.lower()))
+            # Si no coinciden exacto, extraemos las palabras de 3 o más letras
+            tokens_busq = set(re.findall(r'[a-z0-9]{3,}', limpiar_nombre_comparacion(nombre_objetivo)))
+            tokens_actual = set(re.findall(r'[a-z0-9]{3,}', limpiar_nombre_comparacion(empresa_actual)))
+            
+            # Si comparten alguna palabra importante, consideramos que coincide
             if tokens_busq & tokens_actual:
                 coincide = True
                 
+        # Si definitivamente no tienen nada que ver, ignoramos el anuncio
         if not coincide:
             continue
 
-        if empresa_actual.lower() in bloqueadas:
+        if empresa_actual.lower() in bloqueadas or nombre_objetivo.lower() in bloqueadas:
             continue
 
         fecha_final = normalizar_fecha_texto(item.get("fechaTexto"))
@@ -539,7 +551,7 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
 
         anuncio_data = {
             "id_anuncio": ad_id,
-            "compania": nombre_objetivo,
+            "compania": nombre_objetivo, # Guardamos el nombre limpio de tu lista
             "fecha_subida": fecha_final,
             "estado": item["estado"],
             "plataformas": item["plataformas"],
@@ -552,7 +564,7 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
         if guardar_anuncio(anuncio_data, bloqueadas):
             guardados += 1
             badge_estado = "🟢 Activo" if item["estado"] == "Activo" else "⚪ Inactivo"
-            print(f"  ✨ [{icono}] [{badge_estado}] {nombre_objetivo} | Plat: {item['plataformas']} | Dur: {dur_txt} | Fecha: {fecha_final} | Titulo: {titulo_definitivo[:40]}...")
+            print(f"  ✨ [{icono}] [{badge_estado}] {empresa_actual} (Mapeado a {nombre_objetivo}) | Plat: {item['plataformas']} | Dur: {dur_txt} | Fecha: {fecha_final} | Titulo: {titulo_definitivo[:40]}...")
 
     print(f"✅ Anuncios registrados para {nombre_objetivo}: {guardados}")
 
