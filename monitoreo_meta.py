@@ -385,8 +385,9 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
 
             if (textoIconos.includes('facebook') || cardText.includes('Facebook')) plataformas.push('Facebook');
             if (textoIconos.includes('instagram') || cardText.includes('Instagram')) plataformas.push('Instagram');
+            if (textoIconos.includes('threads') || textoIconos.includes('hilos') || cardText.includes('Threads')) plataformas.push('Threads');
             if (textoIconos.includes('messenger') || cardText.includes('Messenger')) plataformas.push('Messenger');
-            if (textoIconos.includes('audience') || cardText.includes('Audience Network')) plataformas.push('Audience Network');
+            if (textoIconos.includes('audience') || textoIconos.includes('network') || cardText.includes('Audience Network')) plataformas.push('Audience Network');
 
             const plataformasFinal = plataformas.length > 0 ? Array.from(new Set(plataformas)).join(', ') : 'Facebook';
 
