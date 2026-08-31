@@ -500,10 +500,22 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
         vistos.add(ad_id)
 
         empresa_actual = item["empresa"].strip()
-        busq_limpia = re.sub(r'[^\w\s]', '', nombre_objetivo.lower()).strip()
-        actual_limpia = re.sub(r'[^\w\s]', '', empresa_actual.lower()).strip()
+        
+        # Eliminar espacios y símbolos para que variaciones coincidan
+        busq_str = re.sub(r'[\W_]', '', nombre_objetivo.lower())
+        actual_str = re.sub(r'[\W_]', '', empresa_actual.lower())
 
-        if busq_limpia not in actual_limpia and actual_limpia not in busq_limpia:
+        coincide = False
+        if busq_str in actual_str or actual_str in busq_str:
+            coincide = True
+        else:
+            # Comprobar si comparten palabras clave principales (de 4 o más letras)
+            tokens_busq = set(re.findall(r'[a-z0-9]{4,}', nombre_objetivo.lower()))
+            tokens_actual = set(re.findall(r'[a-z0-9]{4,}', empresa_actual.lower()))
+            if tokens_busq & tokens_actual:
+                coincide = True
+                
+        if not coincide:
             continue
 
         if empresa_actual.lower() in bloqueadas:
