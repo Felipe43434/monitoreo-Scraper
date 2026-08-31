@@ -11,12 +11,6 @@ from playwright.sync_api import sync_playwright
 
 load_dotenv()
 DATABASE_URL = os.environ.get("DATABASE_URL")
-
-# Forzar conexión segura (requerida por Neon)
-if DATABASE_URL and "sslmode=" not in DATABASE_URL:
-    separador = "&" if "?" in DATABASE_URL else "?"
-    DATABASE_URL = f"{DATABASE_URL}{separador}sslmode=require"
-
 JSON_FILE = "anuncios_guardados.json"
 PROGRESO_FILE = "progreso.json"
 
@@ -386,29 +380,13 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
             }
 
             const plataformas = [];
-            const elementosPlat = Array.from(card.querySelectorAll('span, div, svg, i'));
-            elementosPlat.forEach(el => {
-                const label = (el.getAttribute('aria-label') || el.getAttribute('title') || '').toLowerCase();
-                const htmlStr = (el.outerHTML || '').toLowerCase();
-                const textStr = (el.innerText || '').toLowerCase();
-                const combinado = label + ' ' + htmlStr + ' ' + textStr;
+            const svgs = Array.from(card.querySelectorAll('svg, i, span[role="img"], div[aria-label]'));
+            const textoIconos = svgs.map(s => (s.getAttribute('aria-label') || '') + ' ' + (s.outerHTML || '')).join(' ').toLowerCase();
 
-                if (combinado.includes('facebook') || combinado.includes('_fb')) {
-                    if (!plataformas.includes('Facebook')) plataformas.push('Facebook');
-                }
-                if (combinado.includes('instagram') || combinado.includes('_ig')) {
-                    if (!plataformas.includes('Instagram')) plataformas.push('Instagram');
-                }
-                if (combinado.includes('threads') || combinado.includes('hilos')) {
-                    if (!plataformas.includes('Threads')) plataformas.push('Threads');
-                }
-                if (combinado.includes('messenger')) {
-                    if (!plataformas.includes('Messenger')) plataformas.push('Messenger');
-                }
-                if (combinado.includes('audience') || combinado.includes('network')) {
-                    if (!plataformas.includes('Audience Network')) plataformas.push('Audience Network');
-                }
-            });
+            if (textoIconos.includes('facebook') || cardText.includes('Facebook')) plataformas.push('Facebook');
+            if (textoIconos.includes('instagram') || cardText.includes('Instagram')) plataformas.push('Instagram');
+            if (textoIconos.includes('messenger') || cardText.includes('Messenger')) plataformas.push('Messenger');
+            if (textoIconos.includes('audience') || cardText.includes('Audience Network')) plataformas.push('Audience Network');
 
             const plataformasFinal = plataformas.length > 0 ? Array.from(new Set(plataformas)).join(', ') : 'Facebook';
 
