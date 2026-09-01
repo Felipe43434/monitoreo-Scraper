@@ -11,6 +11,12 @@ from playwright.sync_api import sync_playwright
 
 load_dotenv()
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Conexión SSL requerida para PostgreSQL/Neon
+if DATABASE_URL and "sslmode=" not in DATABASE_URL:
+    separador = "&" if "?" in DATABASE_URL else "?"
+    DATABASE_URL = f"{DATABASE_URL}{separador}sslmode=require"
+
 JSON_FILE = "anuncios_guardados.json"
 PROGRESO_FILE = "progreso.json"
 
@@ -92,10 +98,10 @@ def inicializar_bd():
             );
         """)
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS companias_excluidas (
+            CREATE TABLE IF NOT EXISTS companias_bloqueadas (
                 id SERIAL PRIMARY KEY,
                 compania VARCHAR(255) UNIQUE NOT NULL,
-                fecha_exclusion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                fecha_bloqueo TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS anuncios_link_idx ON anuncios (link_individual);")
@@ -110,7 +116,7 @@ def obtener_companias_bloqueadas():
     try:
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
         cur = conn.cursor()
-        cur.execute("SELECT compania FROM companias_excluidas;")
+        cur.execute("SELECT compania FROM companias_bloqueadas;")
         for r in cur.fetchall():
             if r[0]:
                 bloqueadas.add(r[0].strip().lower())
@@ -277,9 +283,9 @@ def extraer_fecha_json_profundo(obj):
                 return f
     return None
 
-def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
+def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
     print(f"\n🌐 Abriendo: {url_final}")
-    print(f"🎯 Monitoreando: '{nombre_objetivo}'")
+    print(f"🎯 Monitoreando: '{nombre_flask}' (Búsqueda bot: '{nombre_bot}')")
 
     fechas_api = {}
     duraciones_api = {}
@@ -352,8 +358,8 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
             const adId = matchId[1];
 
             let card = elemId;
-            for (let i = 0; i < 7; i++) {
-                if (card.parentElement && card.parentElement.offsetHeight > 180 && card.parentElement.offsetWidth < 700) {
+            for (let i = 0; i < 8; i++) {
+                if (card.parentElement && card.parentElement.offsetHeight > 150) {
                     card = card.parentElement;
                 }
             }
@@ -368,9 +374,16 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
             }
 
             let empresa = nombreBuscado;
-            const idxPubli = lineas.findIndex(l => l.toLowerCase() === 'publicidad' || l.toLowerCase() === 'sponsored');
+            const idxPubli = lineas.findIndex(l => /^(?:publicidad|sponsored)$/i.test(l));
             if (idxPubli > 0) {
                 empresa = lineas[idxPubli - 1];
+            } else if (lineas.length > 0) {
+                for (let l of lineas) {
+                    if (l.length > 2 && !l.includes(':') && !l.toLowerCase().includes('identificador') && !l.toLowerCase().includes('activo')) {
+                        empresa = l;
+                        break;
+                    }
+                }
             }
 
             let fechaTexto = "";
@@ -380,13 +393,25 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
             }
 
             const plataformas = [];
-            const svgs = Array.from(card.querySelectorAll('svg, i, span[role="img"], div[aria-label]'));
-            const textoIconos = svgs.map(s => (s.getAttribute('aria-label') || '') + ' ' + (s.outerHTML || '')).join(' ').toLowerCase();
+            const headerHtml = htmlText.substring(0, 4000).toLowerCase();
+            const headerText = cardText.substring(0, 600).toLowerCase();
+            const blobTexto = headerHtml + ' ' + headerText;
 
-            if (textoIconos.includes('facebook') || cardText.includes('Facebook')) plataformas.push('Facebook');
-            if (textoIconos.includes('instagram') || cardText.includes('Instagram')) plataformas.push('Instagram');
-            if (textoIconos.includes('messenger') || cardText.includes('Messenger')) plataformas.push('Messenger');
-            if (textoIconos.includes('audience') || cardText.includes('Audience Network')) plataformas.push('Audience Network');
+            if (blobTexto.includes('facebook') || blobTexto.includes('_fb') || blobTexto.includes('fb_icon')) {
+                plataformas.push('Facebook');
+            }
+            if (blobTexto.includes('instagram') || blobTexto.includes('_ig') || blobTexto.includes('ig_icon')) {
+                plataformas.push('Instagram');
+            }
+            if (blobTexto.includes('threads') || blobTexto.includes('hilos')) {
+                plataformas.push('Threads');
+            }
+            if (blobTexto.includes('messenger') || blobTexto.includes('msgr')) {
+                plataformas.push('Messenger');
+            }
+            if (blobTexto.includes('audience') || blobTexto.includes('an_icon') || blobTexto.includes('audience network')) {
+                plataformas.push('Audience Network');
+            }
 
             const plataformasFinal = plataformas.length > 0 ? Array.from(new Set(plataformas)).join(', ') : 'Facebook';
 
@@ -467,12 +492,12 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
                 plataformas: plataformasFinal,
                 esVideo: hasVideo,
                 duracion: duracionSegundos,
-                copy: rawCopy || `Anuncio de ${empresa}`
+                copy: rawCopy || `Anuncio de ${nombreBuscado}`
             });
         });
 
         return resultados;
-    }""", nombre_objetivo)
+    }""", nombre_bot)
 
     vistos = set()
     guardados = 0
@@ -484,13 +509,14 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
         vistos.add(ad_id)
 
         empresa_actual = item["empresa"].strip()
-        busq_limpia = re.sub(r'[^\w\s]', '', nombre_objetivo.lower()).strip()
+        busq_limpia = re.sub(r'[^\w\s]', '', nombre_bot.lower()).strip()
         actual_limpia = re.sub(r'[^\w\s]', '', empresa_actual.lower()).strip()
 
-        if busq_limpia not in actual_limpia and actual_limpia not in busq_limpia:
+        es_valida = (busq_limpia in actual_limpia) or (actual_limpia in busq_limpia) or (actual_limpia == "")
+        if not es_valida:
             continue
 
-        if empresa_actual.lower() in bloqueadas:
+        if nombre_flask.lower() in bloqueadas or empresa_actual.lower() in bloqueadas:
             continue
 
         fecha_final = normalizar_fecha_texto(item.get("fechaTexto"))
@@ -507,11 +533,11 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
         icono = "🎬 VIDEO" if formato == "Video" else "🖼️ FOTO"
         dur_txt = f"{duracion_final}s" if duracion_final > 0 else "-"
 
-        titulo_definitivo = limpiar_texto_copy(item["copy"], nombre_objetivo)
+        titulo_definitivo = limpiar_texto_copy(item["copy"], nombre_flask)
 
         anuncio_data = {
             "id_anuncio": ad_id,
-            "compania": nombre_objetivo,
+            "compania": nombre_flask,  # Se guarda con el nombre del Dashboard
             "fecha_subida": fecha_final,
             "estado": item["estado"],
             "plataformas": item["plataformas"],
@@ -524,9 +550,9 @@ def extraer_anuncios(page, nombre_objetivo, url_final, bloqueadas):
         if guardar_anuncio(anuncio_data, bloqueadas):
             guardados += 1
             badge_estado = "🟢 Activo" if item["estado"] == "Activo" else "⚪ Inactivo"
-            print(f"  ✨ [{icono}] [{badge_estado}] {nombre_objetivo} | Plat: {item['plataformas']} | Dur: {dur_txt} | Fecha: {fecha_final} | Titulo: {titulo_definitivo[:40]}...")
+            print(f"  ✨ [{icono}] [{badge_estado}] {nombre_flask} | Plat: {item['plataformas']} | Dur: {dur_txt} | Fecha: {fecha_final} | Titulo: {titulo_definitivo[:40]}...")
 
-    print(f"✅ Anuncios registrados para {nombre_objetivo}: {guardados}")
+    print(f"✅ Anuncios registrados para {nombre_flask}: {guardados}")
 
 def main():
     inicializar_bd()
@@ -547,11 +573,13 @@ def main():
             l = linea.strip()
             if not l or l.startswith("#"):
                 continue
-            if "|" in l:
-                partes = l.split("|", 1)
-                entradas.append((partes[0].strip(), partes[1].strip()))
+            partes = [p.strip() for p in l.split("|")]
+            if len(partes) >= 3:
+                entradas.append((partes[0], partes[1], partes[2]))
+            elif len(partes) == 2:
+                entradas.append((partes[0], partes[0], partes[1]))
             else:
-                entradas.append(("Marca Monitoreada", l))
+                entradas.append(("Marca Monitoreada", "Marca Monitoreada", l))
 
     total_empresas = len(entradas)
     if total_empresas == 0:
@@ -570,15 +598,15 @@ def main():
         )
         page = context.new_page()
 
-        for indice, (nombre_empresa, url_base) in enumerate(entradas, 1):
+        for indice, (nombre_flask, nombre_bot, url_base) in enumerate(entradas, 1):
             pct = int(((indice - 1) / total_empresas) * 100)
-            actualizar_progreso(activo=True, actual=indice, total=total_empresas, empresa=nombre_empresa, porcentaje=pct, finalizado=False)
+            actualizar_progreso(activo=True, actual=indice, total=total_empresas, empresa=nombre_flask, porcentaje=pct, finalizado=False)
             
             url_final = preparar_url_completa(url_base, dias)
             try:
-                extraer_anuncios(page, nombre_empresa, url_final, bloqueadas)
+                extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas)
             except Exception as e:
-                print(f"❌ Error en {nombre_empresa}: {e}")
+                print(f"❌ Error en {nombre_flask}: {e}")
 
         browser.close()
         actualizar_progreso(activo=False, actual=total_empresas, total=total_empresas, empresa="Completado", porcentaje=100, finalizado=True)
