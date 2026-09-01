@@ -2,6 +2,10 @@ import os
 import io
 import re
 import base64
+import os
+import io
+import base64
+import re
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -137,14 +141,29 @@ def parse_urls_txt(raw_text):
         line_clean = line.strip()
         if not line_clean or line_clean.startswith('#'):
             continue
-        if '|' in line_clean:
-            parts = line_clean.split('|', 1)
-            nombre = parts[0].strip()
-            url = parts[1].strip()
-            if nombre and url:
-                items.append({'id': idx, 'nombre': nombre, 'url': url})
+        parts = [p.strip() for p in line_clean.split('|')]
+        
+        if len(parts) >= 3:
+            items.append({
+                'id': idx,
+                'nombre_flask': parts[0],
+                'nombre_bot': parts[1],
+                'url': parts[2]
+            })
+        elif len(parts) == 2:
+            items.append({
+                'id': idx,
+                'nombre_flask': parts[0],
+                'nombre_bot': parts[0],
+                'url': parts[1]
+            })
         else:
-            items.append({'id': idx, 'nombre': 'URL de Búsqueda', 'url': line_clean})
+            items.append({
+                'id': idx,
+                'nombre_flask': 'Empresa Monitoreada',
+                'nombre_bot': 'Empresa Monitoreada',
+                'url': line_clean
+            })
     return items
 
 def extraer_fecha_anuncio(ad):
@@ -364,17 +383,14 @@ HTML_TEMPLATE = """
         </a>
         <div class="d-flex align-items-center gap-2 ms-auto">
             
-            <!-- Botón URLs de Búsqueda -->
             <button class="btn btn-sm btn-outline-light d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalConfigUrls">
                 <i class="bi bi-file-earmark-code fs-6"></i> urls.txt ({{ config_urls|length }})
             </button>
 
-            <!-- Botón Compañías Bloqueadas -->
             <button class="btn btn-sm btn-outline-danger d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalBlockedCompanies">
                 <i class="bi bi-slash-circle"></i> Bloqueadas ({{ companias_bloqueadas|length }})
             </button>
 
-            <!-- Sincronizador -->
             <div class="sync-container d-flex flex-column gap-1 ms-1">
                 <form action="/lanzar_scraper" method="POST" id="scraperForm" onsubmit="startInlineScraping(event)" class="d-flex align-items-center gap-2 m-0">
                     <select name="dias_scraping" id="selectDiasScraping" class="form-select form-select-sm bg-dark text-light border-secondary" style="width: 100px;">
@@ -433,11 +449,11 @@ HTML_TEMPLATE = """
             <div class="modal-body p-4">
                 <form action="/guardar_urls_txt" method="POST">
                     <div class="d-flex justify-content-between align-items-center mb-2">
-                        <span class="small text-muted">Edita o agrega líneas con el formato <code>Nombre de la Empresa | URL</code></span>
+                        <span class="small text-muted">Formato: <code>Nombre en Panel | Nombre Búsqueda Bot | URL</code></span>
                         <span class="badge bg-secondary-subtle text-secondary">{{ config_urls|length }} enlaces detectados</span>
                     </div>
                     
-                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-3 bg-dark text-light border-secondary" rows="10" placeholder="A2Venezuela | https://www.facebook.com/ads/library/?...&#10;Bitnetwork | https://www.facebook.com/ads/library/?...&#10;Fina Partner | https://www.facebook.com/ads/library/?...">{{ raw_urls_content }}</textarea>
+                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-3 bg-dark text-light border-secondary" rows="10" placeholder="Nombre en Panel | Nombre en Meta | https://www.facebook.com/ads/library/?...">{{ raw_urls_content }}</textarea>
                     
                     <div class="d-flex justify-content-between align-items-center">
                         <small class="text-secondary"><i class="bi bi-github"></i> Se sincronizará directamente con el archivo <code>urls.txt</code> de tu repositorio.</small>
@@ -445,28 +461,30 @@ HTML_TEMPLATE = """
                     </div>
                 </form>
 
-                <h6 class="fw-bold mt-4 mb-2 small text-uppercase text-muted">Vista Previa de Empresas en urls.txt</h6>
-                <div class="table-responsive" style="max-height: 180px; overflow-y: auto;">
+                <h6 class="fw-bold mt-4 mb-2 small text-uppercase text-muted">Vista Previa de Configuración</h6>
+                <div class="table-responsive" style="max-height: 200px; overflow-y: auto;">
                     <table class="table table-sm table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr class="small text-muted">
                                 <th>#</th>
-                                <th>Empresa</th>
-                                <th>URL de Búsqueda</th>
+                                <th>Nombre en Panel</th>
+                                <th>Búsqueda Bot</th>
+                                <th>URL de Meta Ads</th>
                             </tr>
                         </thead>
                         <tbody>
                             {% for u in config_urls %}
                             <tr>
                                 <td class="text-muted small">{{ loop.index }}</td>
-                                <td class="fw-bold">{{ u.nombre }}</td>
-                                <td class="small text-truncate" style="max-width: 420px;">
+                                <td class="fw-bold text-primary">{{ u.nombre_flask }}</td>
+                                <td class="fw-semibold text-secondary">{{ u.nombre_bot }}</td>
+                                <td class="small text-truncate" style="max-width: 320px;">
                                     <a href="{{ u.url }}" target="_blank" class="text-decoration-none text-info">{{ u.url }}</a>
                                 </td>
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="3" class="text-center py-3 text-muted small">No hay URLs configuradas en urls.txt.</td>
+                                <td colspan="4" class="text-center py-3 text-muted small">No hay URLs configuradas en urls.txt.</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -583,13 +601,13 @@ HTML_TEMPLATE = """
     <div class="card-custom p-3 mb-4 card-filter-container">
         <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end">
             <!-- 1. Buscar -->
-            <div class="col-md-4 col-lg-2">
+            <div class="col-md-3 col-lg-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-search"></i> Buscar</label>
                 <input type="text" name="q" class="form-control form-control-sm" placeholder="Texto, link..." value="{{ request.args.get('q', '') }}">
             </div>
 
             <!-- 2. Selección Múltiple Compañías -->
-            <div class="col-md-4 col-lg-2">
+            <div class="col-md-3 col-lg-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-building"></i> Compañías ({% if companias_sel %}{{ companias_sel|length }}{% else %}Todas{% endif %})</label>
                 <div class="dropdown">
                     <button class="form-select form-select-sm text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
@@ -616,8 +634,32 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- 3. Filtro Estado -->
-            <div class="col-md-4 col-lg-2">
+            <!-- 3. Filtro Tiempo / Fecha -->
+            <div class="col-6 col-md-2 col-lg-1">
+                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-calendar-range"></i> Tiempo</label>
+                <select name="tiempo" class="form-select form-select-sm">
+                    <option value="todo" {% if request.args.get('tiempo', 'todo') == 'todo' %}selected{% endif %}>Todo</option>
+                    <option value="7d" {% if request.args.get('tiempo') == '7d' %}selected{% endif %}>7 días</option>
+                    <option value="15d" {% if request.args.get('tiempo') == '15d' %}selected{% endif %}>15 días</option>
+                    <option value="30d" {% if request.args.get('tiempo') == '30d' %}selected{% endif %}>30 días</option>
+                    <option value="90d" {% if request.args.get('tiempo') == '90d' %}selected{% endif %}>90 días</option>
+                </select>
+            </div>
+
+            <!-- 4. Filtro Duración del Video -->
+            <div class="col-6 col-md-2 col-lg-1">
+                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-stopwatch"></i> Duración</label>
+                <select name="duracion" class="form-select form-select-sm">
+                    <option value="todas" {% if request.args.get('duracion', 'todas') == 'todas' %}selected{% endif %}>Todas</option>
+                    <option value="corta" {% if request.args.get('duracion') == 'corta' %}selected{% endif %}>&lt; 15s</option>
+                    <option value="media" {% if request.args.get('duracion') == 'media' %}selected{% endif %}>15s - 60s</option>
+                    <option value="larga" {% if request.args.get('duracion') == 'larga' %}selected{% endif %}>&gt; 60s</option>
+                    <option value="sin_video" {% if request.args.get('duracion') == 'sin_video' %}selected{% endif %}>Estático</option>
+                </select>
+            </div>
+
+            <!-- 5. Filtro Estado -->
+            <div class="col-6 col-md-2 col-lg-1">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-toggle-on"></i> Estado</label>
                 <select name="estado" class="form-select form-select-sm">
                     <option value="">Todos</option>
@@ -626,8 +668,8 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
-            <!-- 4. Filtro Plataforma (Con Threads, Facebook, Instagram, Messenger, Audience Network) -->
-            <div class="col-md-4 col-lg-2">
+            <!-- 6. Filtro Plataforma -->
+            <div class="col-6 col-md-3 col-lg-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-share"></i> Plataforma</label>
                 <select name="plataforma" class="form-select form-select-sm">
                     <option value="">Todas</option>
@@ -639,8 +681,8 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
-            <!-- 5. Filtro Formato -->
-            <div class="col-md-4 col-lg-2">
+            <!-- 7. Filtro Formato -->
+            <div class="col-6 col-md-3 col-lg-1">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-play-circle"></i> Formato</label>
                 <select name="formato" class="form-select form-select-sm">
                     <option value="">Todos</option>
@@ -649,8 +691,8 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
-            <!-- 6. Botones de Acción -->
-            <div class="col-md-4 col-lg-2 d-flex gap-1">
+            <!-- 8. Botones de Acción -->
+            <div class="col-12 col-lg-2 d-flex gap-1">
                 <button type="submit" class="btn btn-sm btn-primary w-100"><i class="bi bi-funnel"></i> Filtrar</button>
                 <a href="/" class="btn btn-sm btn-outline-secondary" title="Limpiar filtros"><i class="bi bi-arrow-counterclockwise"></i></a>
                 <a href="/descargar_excel?{{ request.query_string.decode() }}" class="btn btn-sm btn-success text-nowrap" title="Descargar Excel"><i class="bi bi-file-earmark-excel"></i></a>
@@ -787,7 +829,12 @@ HTML_TEMPLATE = """
                                 <td>{{ ad.plataformas_html|safe }}</td>
                                 <td>
                                     {% if 'video' in (ad.formato|string|lower) %}
-                                        <span class="text-danger small fw-semibold"><i class="bi bi-camera-video"></i> Video</span>
+                                        <span class="text-danger small fw-semibold">
+                                            <i class="bi bi-camera-video"></i> Video
+                                            {% if ad.duracion_segundos and ad.duracion_segundos > 0 %}
+                                                ({{ ad.duracion_segundos }}s)
+                                            {% endif %}
+                                        </span>
                                     {% else %}
                                         <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
                                     {% endif %}
@@ -860,7 +907,12 @@ HTML_TEMPLATE = """
                                 <td>{{ ad.plataformas_html|safe }}</td>
                                 <td>
                                     {% if 'video' in (ad.formato|string|lower) %}
-                                        <span class="text-danger small fw-semibold"><i class="bi bi-camera-video"></i> Video</span>
+                                        <span class="text-danger small fw-semibold">
+                                            <i class="bi bi-camera-video"></i> Video
+                                            {% if ad.duracion_segundos and ad.duracion_segundos > 0 %}
+                                                ({{ ad.duracion_segundos }}s)
+                                            {% endif %}
+                                        </span>
                                     {% else %}
                                         <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
                                     {% endif %}
@@ -927,7 +979,12 @@ HTML_TEMPLATE = """
                                 <td>{{ ad.plataformas_html|safe }}</td>
                                 <td>
                                     {% if 'video' in (ad.formato|string|lower) %}
-                                        <span class="text-danger small fw-semibold"><i class="bi bi-camera-video"></i> Video</span>
+                                        <span class="text-danger small fw-semibold">
+                                            <i class="bi bi-camera-video"></i> Video
+                                            {% if ad.duracion_segundos and ad.duracion_segundos > 0 %}
+                                                ({{ ad.duracion_segundos }}s)
+                                            {% endif %}
+                                        </span>
                                     {% else %}
                                         <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
                                     {% endif %}
@@ -1146,8 +1203,8 @@ HTML_TEMPLATE = """
                         position: 'bottom', 
                         labels: { 
                             boxWidth: 12, 
-                            usePointStyle: true,
-                            padding: 15
+                            usePointStyle: true, 
+                            padding: 15 
                         } 
                     }
                 },
@@ -1294,6 +1351,8 @@ def index():
     estado = request.args.get('estado', '').strip()
     formato = request.args.get('formato', '').strip()
     plataforma = request.args.get('plataforma', '').strip()
+    tiempo = request.args.get('tiempo', 'todo').strip()
+    duracion = request.args.get('duracion', 'todas').strip()
 
     raw_urls_content, _ = get_github_urls_file()
     config_urls = parse_urls_txt(raw_urls_content)
@@ -1347,6 +1406,29 @@ def index():
                 if plataforma:
                     query += " AND plataformas ILIKE %s"
                     params.append(f"%{plataforma}%")
+
+                if duracion == 'corta':
+                    query += " AND duracion_segundos > 0 AND duracion_segundos < 15"
+                elif duracion == 'media':
+                    query += " AND duracion_segundos >= 15 AND duracion_segundos <= 60"
+                elif duracion == 'larga':
+                    query += " AND duracion_segundos > 60"
+                elif duracion == 'sin_video':
+                    query += " AND (duracion_segundos = 0 OR duracion_segundos IS NULL)"
+
+                hoy = datetime.today()
+                if tiempo == '7d':
+                    query += " AND fecha_subida >= %s"
+                    params.append((hoy - timedelta(days=7)).strftime('%Y-%m-%d'))
+                elif tiempo == '15d':
+                    query += " AND fecha_subida >= %s"
+                    params.append((hoy - timedelta(days=15)).strftime('%Y-%m-%d'))
+                elif tiempo == '30d':
+                    query += " AND fecha_subida >= %s"
+                    params.append((hoy - timedelta(days=30)).strftime('%Y-%m-%d'))
+                elif tiempo == '90d':
+                    query += " AND fecha_subida >= %s"
+                    params.append((hoy - timedelta(days=90)).strftime('%Y-%m-%d'))
 
                 query += " ORDER BY id DESC LIMIT 1000"
                 cur.execute(query, tuple(params))
@@ -1563,6 +1645,8 @@ def descargar_excel():
         estado = request.args.get('estado', '').strip()
         formato = request.args.get('formato', '').strip()
         plataforma = request.args.get('plataforma', '').strip()
+        tiempo = request.args.get('tiempo', 'todo').strip()
+        duracion = request.args.get('duracion', 'todas').strip()
 
         with conn.cursor() as cur:
             cur.execute("SELECT compania FROM companias_bloqueadas")
@@ -1591,6 +1675,29 @@ def descargar_excel():
         if plataforma:
             query += " AND plataformas ILIKE %s"
             params.append(f"%{plataforma}%")
+
+        if duracion == 'corta':
+            query += " AND duracion_segundos > 0 AND duracion_segundos < 15"
+        elif duracion == 'media':
+            query += " AND duracion_segundos >= 15 AND duracion_segundos <= 60"
+        elif duracion == 'larga':
+            query += " AND duracion_segundos > 60"
+        elif duracion == 'sin_video':
+            query += " AND (duracion_segundos = 0 OR duracion_segundos IS NULL)"
+
+        hoy = datetime.today()
+        if tiempo == '7d':
+            query += " AND fecha_subida >= %s"
+            params.append((hoy - timedelta(days=7)).strftime('%Y-%m-%d'))
+        elif tiempo == '15d':
+            query += " AND fecha_subida >= %s"
+            params.append((hoy - timedelta(days=15)).strftime('%Y-%m-%d'))
+        elif tiempo == '30d':
+            query += " AND fecha_subida >= %s"
+            params.append((hoy - timedelta(days=30)).strftime('%Y-%m-%d'))
+        elif tiempo == '90d':
+            query += " AND fecha_subida >= %s"
+            params.append((hoy - timedelta(days=90)).strftime('%Y-%m-%d'))
 
         query += " ORDER BY id DESC"
 
