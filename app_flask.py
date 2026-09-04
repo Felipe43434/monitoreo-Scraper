@@ -337,6 +337,7 @@ HTML_TEMPLATE = """
         .badge-inactive { background-color: #64748b; color: #ffffff; }
         .badge-new { background-color: #6366f1; color: #ffffff; animation: pulse 2s infinite; }
         .badge-winning { background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%); color: #ffffff; font-weight: 700; border: none; }
+        .badge-retirado { background-color: #dc2626; color: #ffffff; font-weight: 600; }
         @keyframes pulse {
             0% { opacity: 1; }
             50% { opacity: 0.6; }
@@ -576,10 +577,10 @@ HTML_TEMPLATE = """
         <div class="col-6 col-md-4 col-xl">
             <div class="card-custom p-3 h-100">
                 <div class="d-flex justify-content-between align-items-center">
-                    <span class="stat-label">Fotos / Imágenes</span>
-                    <i class="bi bi-image text-success fs-5"></i>
+                    <span class="stat-label">Retirados / Inactivos</span>
+                    <i class="bi bi-eye-slash text-danger fs-5"></i>
                 </div>
-                <div class="stat-value text-success">{{ total_fotos }}</div>
+                <div class="stat-value text-danger">{{ total_retirados }}</div>
             </div>
         </div>
         <div class="col-6 col-md-4 col-xl">
@@ -647,7 +648,7 @@ HTML_TEMPLATE = """
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-stopwatch"></i> Duración</label>
                 <select name="duracion" class="form-select form-select-sm">
                     <option value="todas" {% if request.args.get('duracion', 'todas') == 'todas' %}selected{% endif %}>Todas</option>
-                    <option value="corta" {% if request.args.get('duracion') == 'corta' %}selected{% endif %}>&lt; 15s</option>
+                    <option value="corta" {% if request.args.get('duracion', 'corta') == 'corta' %}selected{% endif %}>&lt; 15s</option>
                     <option value="media" {% if request.args.get('duracion') == 'media' %}selected{% endif %}>15s - 60s</option>
                     <option value="larga" {% if request.args.get('duracion') == 'larga' %}selected{% endif %}>&gt; 60s</option>
                     <option value="sin_video" {% if request.args.get('duracion') == 'sin_video' %}selected{% endif %}>Estático</option>
@@ -717,6 +718,14 @@ HTML_TEMPLATE = """
             </button>
         </li>
         <li class="nav-item">
+            <button class="nav-link fw-semibold position-relative text-danger" data-bs-toggle="tab" data-bs-target="#tab-retirados" type="button">
+                <i class="bi bi-eye-slash"></i> Retirados de Meta
+                {% if total_retirados > 0 %}
+                <span class="badge rounded-pill bg-danger ms-1">{{ total_retirados }}</span>
+                {% endif %}
+            </button>
+        </li>
+        <li class="nav-item">
             <button class="nav-link fw-semibold position-relative text-info" data-bs-toggle="tab" data-bs-target="#tab-new" type="button">
                 <i class="bi bi-stars text-info"></i> Nuevos Anuncios
                 <span class="badge rounded-pill bg-info ms-1" id="tabNuevosBadge" {% if total_nuevos == 0 %}style="display:none;"{% endif %}>{{ total_nuevos }}</span>
@@ -776,7 +785,7 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- Tabla de Empresas Registradas colocada directamente debajo de los gráficos -->
+            <!-- Tabla de Empresas Registradas -->
             <div class="card-custom overflow-hidden">
                 <div class="p-3 bg-primary bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
                     <div>
@@ -1000,7 +1009,77 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Panel 4: Nuevos Anuncios -->
+        <!-- Panel 4: Retirados / Inactivos de Meta -->
+        <div class="tab-pane fade" id="tab-retirados">
+            <div class="card-custom overflow-hidden">
+                <div class="p-3 bg-danger bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
+                    <div>
+                        <h6 class="fw-bold text-danger mb-1"><i class="bi bi-eye-slash"></i> Anuncios Guardados que Ya Fueron Retirados o Apagados</h6>
+                        <p class="small text-muted mb-0">Campañas que existieron en Meta Ads pero actualmente ya no están activas ni circulando.</p>
+                    </div>
+                    <span class="badge bg-danger fs-6">{{ anuncios_retirados|length }} inactivos</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr class="small text-muted">
+                                <th>Empresa</th>
+                                <th>Estado</th>
+                                <th>Plataformas</th>
+                                <th>Formato</th>
+                                <th>Texto / Copy</th>
+                                <th>Días que Estuvo Activo</th>
+                                <th>Fecha Original</th>
+                                <th>Enlace Histórico</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ad in anuncios_retirados %}
+                            <tr>
+                                <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
+                                <td><span class="badge badge-retirado"><i class="bi bi-x-circle me-1"></i> Retirado</span></td>
+                                <td>{{ ad.plataformas_html|safe }}</td>
+                                <td>
+                                    {% if 'video' in (ad.formato|string|lower) %}
+                                        <span class="text-danger small fw-semibold">
+                                            <i class="bi bi-camera-video"></i> Video
+                                            {% if ad.duracion_segundos and ad.duracion_segundos > 0 %}
+                                                ({{ ad.duracion_segundos }}s)
+                                            {% endif %}
+                                        </span>
+                                    {% else %}
+                                        <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
+                                    {% endif %}
+                                </td>
+                                <td class="small text-muted" style="max-width: 300px;">
+                                    {{ (ad.texto or ad.titulo or 'Sin descripción')[:140] }}
+                                </td>
+                                <td>
+                                    <span class="badge bg-secondary-subtle text-secondary fw-semibold">{{ ad.dias_activo }} días aprox.</span>
+                                </td>
+                                <td class="small fw-semibold">{{ ad.fecha_display }}</td>
+                                <td>
+                                    {% if ad.link_individual %}
+                                    <a href="{{ ad.link_individual }}" target="_blank" class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size: 0.75rem;">
+                                        <i class="bi bi-box-arrow-up-right"></i> Ver en Meta
+                                    </a>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="8" class="text-center py-5 text-muted">
+                                    <i class="bi bi-check-circle fs-2 d-block mb-2 text-success"></i> No hay anuncios retirados registrados en la base de datos para los filtros seleccionados.
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel 5: Nuevos Anuncios -->
         <div class="tab-pane fade" id="tab-new">
             <div class="card-custom overflow-hidden">
                 <div class="p-3 bg-info bg-opacity-10 border-bottom d-flex flex-wrap align-items-center justify-content-between gap-2">
@@ -1071,7 +1150,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Panel 5: Términos Frecuentes -->
+        <!-- Panel 6: Términos Frecuentes -->
         <div class="tab-pane fade" id="tab-keywords">
             <div class="row g-3">
                 <div class="col-lg-7">
@@ -1527,6 +1606,7 @@ def index():
 
     anuncios_winning = []
     anuncios_nuevos = []
+    anuncios_retirados = []
 
     for a in anuncios:
         fecha_detectada = extraer_fecha_anuncio(a)
@@ -1545,6 +1625,10 @@ def index():
         if dias <= 2 and fecha_detectada != 'N/A':
             anuncios_nuevos.append(a)
 
+        # Filtro para anuncios retirados o inactivos
+        if estado_ad == 'inactivo':
+            anuncios_retirados.append(a)
+
     total_anuncios = len(anuncios)
     companias_set = {a['compania'] for a in anuncios if a.get('compania')}
     total_companias = len(companias_set)
@@ -1553,6 +1637,7 @@ def index():
     total_otros = max(0, total_anuncios - (total_videos + total_fotos))
     total_nuevos = len(anuncios_nuevos)
     total_winning = len(anuncios_winning)
+    total_retirados = len(anuncios_retirados)
 
     pct_videos = round((total_videos / total_anuncios * 100), 1) if total_anuncios > 0 else 0
     pct_imagenes = round((total_fotos / total_anuncios * 100), 1) if total_anuncios > 0 else 0
@@ -1628,6 +1713,7 @@ def index():
         anuncios=anuncios,
         anuncios_winning=anuncios_winning,
         anuncios_nuevos=anuncios_nuevos,
+        anuncios_retirados=anuncios_retirados,
         lista_companias=lista_companias,
         companias_bloqueadas=companias_bloqueadas,
         config_urls=config_urls,
@@ -1639,6 +1725,7 @@ def index():
         total_fotos=total_fotos,
         total_nuevos=total_nuevos,
         total_winning=total_winning,
+        total_retirados=total_retirados,
         top_palabras=top_palabras,
         keywords_chart_data=keywords_chart_data,
         timeline_data=timeline_data,
