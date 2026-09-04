@@ -1,9 +1,5 @@
 import os
 import io
-import re
-import base64
-import os
-import io
 import base64
 import re
 import requests
@@ -727,6 +723,11 @@ HTML_TEMPLATE = """
             </button>
         </li>
         <li class="nav-item">
+            <button class="nav-link fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-companies" type="button">
+                <i class="bi bi-buildings"></i> Empresas Registradas ({{ stats_empresas|length }})
+            </button>
+        </li>
+        <li class="nav-item">
             <button class="nav-link fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-keywords" type="button">
                 <i class="bi bi-chat-square-quote"></i> Términos Frecuentes
             </button>
@@ -1014,7 +1015,70 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Panel 5: Términos Frecuentes -->
+        <!-- Panel 5: Empresas Registradas -->
+        <div class="tab-pane fade" id="tab-companies">
+            <div class="card-custom overflow-hidden">
+                <div class="p-3 bg-primary bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
+                    <div>
+                        <h6 class="fw-bold text-primary mb-1"><i class="bi bi-buildings"></i> Empresas Monitoreadas y Volumen de Contenido</h6>
+                        <p class="small text-muted mb-0">Total de creatividades almacenadas en el sistema divididas por formato para cada marca.</p>
+                    </div>
+                    <span class="badge bg-primary fs-6">{{ stats_empresas|length }} empresas</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr class="small text-muted">
+                                <th>#</th>
+                                <th>Compañía / Marca</th>
+                                <th class="text-center">Total Videos</th>
+                                <th class="text-center">Total Fotos</th>
+                                <th class="text-center">Total Anuncios</th>
+                                <th class="text-end">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for emp in stats_empresas %}
+                            <tr>
+                                <td class="text-muted small">{{ loop.index }}</td>
+                                <td>
+                                    <span class="fw-bold fs-6">{{ emp.compania }}</span>
+                                </td>
+                                <td class="text-center">
+                                    <span class="badge bg-danger-subtle text-danger fw-bold fs-6 px-3 py-1">
+                                        <i class="bi bi-camera-video me-1"></i> {{ emp.total_videos }}
+                                    </span>
+                                </td>
+                                <td class="text-center">
+                                    <span class="badge bg-warning-subtle text-warning-emphasis fw-bold fs-6 px-3 py-1">
+                                        <i class="bi bi-image me-1"></i> {{ emp.total_fotos }}
+                                    </span>
+                                </td>
+                                <td class="text-center">
+                                    <span class="badge bg-secondary-subtle text-secondary fw-bold fs-6 px-3 py-1">
+                                        {{ emp.total_anuncios }}
+                                    </span>
+                                </td>
+                                <td class="text-end">
+                                    <a href="/?compania={{ emp.compania }}" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem;" title="Filtrar anuncios de esta empresa">
+                                        <i class="bi bi-funnel"></i> Ver Creatividades
+                                    </a>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="6" class="text-center py-5 text-muted">
+                                    <i class="bi bi-folder-x fs-2 d-block mb-2"></i> No hay estadísticas de empresas disponibles.
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel 6: Términos Frecuentes -->
         <div class="tab-pane fade" id="tab-keywords">
             <div class="row g-3">
                 <div class="col-lg-7">
@@ -1361,6 +1425,7 @@ def index():
     anuncios = []
     lista_companias = []
     companias_bloqueadas = []
+    stats_empresas = []
 
     if conn:
         try:
@@ -1382,6 +1447,34 @@ def index():
                         ORDER BY compania ASC
                     """)
                 lista_companias = [r['compania'] for r in cur.fetchall()]
+
+                # Consulta para la lista de empresas registradas y su cantidad de videos / fotos
+                if companias_bloqueadas:
+                    cur.execute("""
+                        SELECT 
+                            compania,
+                            COUNT(*) AS total_anuncios,
+                            SUM(CASE WHEN LOWER(formato) LIKE '%video%' OR duracion_segundos > 0 THEN 1 ELSE 0 END) AS total_videos,
+                            SUM(CASE WHEN LOWER(formato) NOT LIKE '%video%' AND (duracion_segundos IS NULL OR duracion_segundos = 0) THEN 1 ELSE 0 END) AS total_fotos
+                        FROM anuncios
+                        WHERE compania IS NOT NULL AND compania != ''
+                        AND compania != ALL(%s)
+                        GROUP BY compania
+                        ORDER BY total_videos DESC, total_anuncios DESC;
+                    """, (companias_bloqueadas,))
+                else:
+                    cur.execute("""
+                        SELECT 
+                            compania,
+                            COUNT(*) AS total_anuncios,
+                            SUM(CASE WHEN LOWER(formato) LIKE '%video%' OR duracion_segundos > 0 THEN 1 ELSE 0 END) AS total_videos,
+                            SUM(CASE WHEN LOWER(formato) NOT LIKE '%video%' AND (duracion_segundos IS NULL OR duracion_segundos = 0) THEN 1 ELSE 0 END) AS total_fotos
+                        FROM anuncios
+                        WHERE compania IS NOT NULL AND compania != ''
+                        GROUP BY compania
+                        ORDER BY total_videos DESC, total_anuncios DESC;
+                    """)
+                stats_empresas = cur.fetchall()
 
                 query = "SELECT * FROM anuncios WHERE 1=1"
                 params = []
@@ -1557,6 +1650,7 @@ def index():
         keywords_chart_data=keywords_chart_data,
         timeline_data=timeline_data,
         format_data=format_data,
+        stats_empresas=stats_empresas,
         msg=msg
     )
 
