@@ -357,7 +357,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
     datos_anuncios = page.evaluate(r"""(nombreBuscado) => {
         const resultados = [];
         
-        // 1. Localizar los identificadores visibles de biblioteca
+        // 1. Localizar identificadores en el DOM
         const elementosTexto = Array.from(document.querySelectorAll('*')).filter(el => {
             const txt = el.innerText || '';
             return /(?:Identificador de la biblioteca|Library ID|ID):\s*\d{10,}/i.test(txt) && el.children.length === 0;
@@ -369,7 +369,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
             if (!matchId) return;
             const adId = matchId[1];
 
-            // 2. Ascenso hacia la tarjeta contenedora que contiene tanto la ficha superior como la creatividad
+            // 2. Ascenso hacia el contenedor general de la tarjeta
             let card = elemId;
             while (card && card.parentElement && card.parentElement !== document.body) {
                 const rect = card.parentElement.getBoundingClientRect();
@@ -385,73 +385,86 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
             if (!card) return;
 
             const cardText = card.innerText || '';
+            const htmlText = card.innerHTML || '';
             const lineas = cardText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
-            // 3. ESTADO: Buscar la etiqueta inicial que contiene "Activo" o "Inactivo"
+            // 3. ESTADO: Determinado en las primeras 5 líneas de la cabecera
             let estadoAnuncio = "Activo";
-            const textoSuperior = cardText.substring(0, 300);
-            if (/\b(?:inactivo|inactive)\b/i.test(textoSuperior)) {
-                estadoAnuncio = "Inactivo";
-            } else if (/\b(?:activo|active)\b/i.test(textoSuperior)) {
-                estadoAnuncio = "Activo";
+            const lineasCabecera = lineas.slice(0, 5);
+            for (const linea of lineasCabecera) {
+                if (/^(?:inactivo|inactive)$/i.test(linea) || linea.toLowerCase().includes('inactivo') || linea.toLowerCase().includes('inactive')) {
+                    estadoAnuncio = "Inactivo";
+                    break;
+                } else if (/^(?:activo|active)$/i.test(linea) || linea.toLowerCase().includes('activo') || linea.toLowerCase().includes('active')) {
+                    estadoAnuncio = "Activo";
+                    break;
+                }
             }
 
-            // 4. PLATAFORMAS: Buscar la sección exacta que dice "Plataformas"
+            // 4. PLATAFORMAS: Detección exhaustiva de múltiples redes
             const plataformas = new Set();
-            const elementosPlataforma = Array.from(card.querySelectorAll('*')).filter(el => {
+            const nodosPlataforma = Array.from(card.querySelectorAll('*')).filter(el => {
                 const t = (el.innerText || '').trim();
-                return /^Plataformas\b/i.test(t) && el.children.length <= 6;
+                return /^Plataformas/i.test(t) && el.children.length <= 4;
             });
 
-            let contenedorPlataformas = elementosPlataforma.length > 0 ? elementosPlataforma[0] : null;
-            if (contenedorPlataformas && contenedorPlataformas.parentElement) {
-                // Analizar el contenedor de iconos adyacente a la palabra "Plataformas"
-                const zonaIconos = contenedorPlataformas.parentElement.innerHTML.toLowerCase();
-                if (zonaIconos.includes('facebook') || zonaIconos.includes('fb') || zonaIconos.includes('24709225')) plataformas.add('Facebook');
-                if (zonaIconos.includes('instagram') || zonaIconos.includes('ig')) plataformas.add('Instagram');
-                if (zonaIconos.includes('threads') || zonaIconos.includes('hilos')) plataformas.add('Threads');
-                if (zonaIconos.includes('messenger') || zonaIconos.includes('msgr')) plataformas.add('Messenger');
-                if (zonaIconos.includes('audience') || zonaIconos.includes('network')) plataformas.add('Audience Network');
+            if (nodosPlataforma.length > 0) {
+                const contenedorIconos = nodosPlataforma[0].parentElement || nodosPlataforma[0];
+                const rawHTMLIconos = contenedorIconos.innerHTML.toLowerCase();
+                const rawTextoIconos = (contenedorIconos.innerText || '').toLowerCase();
+                const ariaIconos = (contenedorIconos.getAttribute('aria-label') || '').toLowerCase();
+
+                if (ariaIconos.includes('facebook') || rawTextoIconos.includes('facebook')) plataformas.add('Facebook');
+                if (ariaIconos.includes('instagram') || rawTextoIconos.includes('instagram')) plataformas.add('Instagram');
+                if (ariaIconos.includes('threads') || rawTextoIconos.includes('threads')) plataformas.add('Threads');
+                if (ariaIconos.includes('messenger') || rawTextoIconos.includes('messenger')) plataformas.add('Messenger');
+                if (ariaIconos.includes('audience') || rawTextoIconos.includes('audience')) plataformas.add('Audience Network');
+
+                if (rawHTMLIconos.includes('facebook') || rawHTMLIconos.includes('_fb') || rawHTMLIconos.includes('fb_icon')) plataformas.add('Facebook');
+                if (rawHTMLIconos.includes('instagram') || rawHTMLIconos.includes('_ig') || rawHTMLIconos.includes('ig_icon')) plataformas.add('Instagram');
+                if (rawHTMLIconos.includes('threads') || rawHTMLIconos.includes('hilos')) plataformas.add('Threads');
+                if (rawHTMLIconos.includes('messenger') || rawHTMLIconos.includes('msgr')) plataformas.add('Messenger');
+                if (rawHTMLIconos.includes('audience') || rawHTMLIconos.includes('an_icon') || rawHTMLIconos.includes('network')) plataformas.add('Audience Network');
             }
 
-            // Respaldo por atributos aria y SVG dentro de la tarjeta
-            if (plataformas.size === 0) {
-                const svgs = Array.from(card.querySelectorAll('svg, i, [aria-label], [role="img"]'));
-                svgs.forEach(s => {
-                    const aria = ((s.getAttribute('aria-label') || '') + ' ' + (s.outerHTML || '')).toLowerCase();
-                    if (aria.includes('facebook')) plataformas.add('Facebook');
-                    if (aria.includes('instagram')) plataformas.add('Instagram');
-                    if (aria.includes('threads')) plataformas.add('Threads');
-                    if (aria.includes('messenger')) plataformas.add('Messenger');
-                    if (aria.includes('audience')) plataformas.add('Audience Network');
-                });
+            const elementosAria = Array.from(card.querySelectorAll('[aria-label], [title], svg, role'));
+            elementosAria.slice(0, 30).forEach(el => {
+                const attr = ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.className || '')).toLowerCase();
+                if (attr.includes('facebook')) plataformas.add('Facebook');
+                if (attr.includes('instagram')) plataformas.add('Instagram');
+                if (attr.includes('threads')) plataformas.add('Threads');
+                if (attr.includes('messenger')) plataformas.add('Messenger');
+                if (attr.includes('audience')) plataformas.add('Audience Network');
+            });
+
+            let plataformasFinal = Array.from(plataformas).join(', ');
+            if (!plataformasFinal) {
+                plataformasFinal = "Facebook";
             }
 
-            const plataformasFinal = plataformas.size > 0 ? Array.from(plataformas).join(', ') : 'Facebook';
-
-            // 5. FECHA DE SUBIDA
+            // 5. FECHA DE PUBLICACIÓN
             let fechaTexto = "";
             const matchFecha = cardText.match(/(?:En circulaci[oó]n desde(?: el)?|Started running on)\s*:?\s*([^\n·•]+)/i);
             if (matchFecha) {
                 fechaTexto = matchFecha[1].trim();
             }
 
-            // 6. EMPRESA (Texto ubicado encima de "Publicidad")
+            // 6. EMPRESA ANUNCIANTE
             let empresa = nombreBuscado;
             const idxPubli = lineas.findIndex(l => /^(?:publicidad|sponsored)$/i.test(l));
             if (idxPubli > 0) {
                 empresa = lineas[idxPubli - 1];
             }
 
-            // 7. FORMATO (Presencia de tag video, botón circular de play '▶' o duración)
+            // 7. FORMATO Y DURACIÓN
             let duracionSegundos = 0;
             const videoEl = card.querySelector('video');
             const playButton = card.querySelector('[aria-label*="reproducir" i], [aria-label*="play" i], [aria-label*="video" i], svg polygon, svg path[d*="M8"], svg path[d*="M5"]');
             const hasVideo = videoEl !== null || 
                              playButton !== null ||
                              /\b\d{1,2}:\d{2}\b/.test(cardText) || 
-                             card.innerHTML.includes('video/mp4') || 
-                             card.innerHTML.includes('blob:');
+                             htmlText.includes('video/mp4') || 
+                             htmlText.includes('blob:');
 
             if (videoEl && videoEl.duration && !isNaN(videoEl.duration) && videoEl.duration > 0) {
                 duracionSegundos = Math.round(videoEl.duration);
@@ -464,7 +477,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
                 }
             }
 
-            // 8. TEXTO / COPY DEL ANUNCIO (Texto debajo de 'Publicidad' y encima del contenido visual)
+            // 8. TEXTO / COPY DEL ANUNCIO
             let rawCopy = "";
             const copyContainers = Array.from(card.querySelectorAll('div[style*="white-space: pre-wrap"], div[dir="auto"], span[dir="auto"]'));
             for (const c of copyContainers) {
