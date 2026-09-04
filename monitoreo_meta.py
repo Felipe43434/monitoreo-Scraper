@@ -12,7 +12,6 @@ from playwright.sync_api import sync_playwright
 load_dotenv()
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Conexión SSL requerida para PostgreSQL/Neon
 if DATABASE_URL and "sslmode=" not in DATABASE_URL:
     separador = "&" if "?" in DATABASE_URL else "?"
     DATABASE_URL = f"{DATABASE_URL}{separador}sslmode=require"
@@ -72,9 +71,10 @@ def normalizar_fecha_texto(texto_fecha):
         ano = int(m2.group(3))
         return f"{ano:04d}-{mes:02d}-{dia:02d}"
 
-    m3 = re.search(r'(\d{4})-(\d{2})-(\d{2})', txt)
+    m3 = re.search(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})', txt)
     if m3:
-        return m3.group(0)
+        y, m, d = m3.groups()
+        return f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
 
     return None
 
@@ -326,103 +326,132 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
                 pass
 
     page.on("response", interceptar_red)
-    page.goto(url_final, wait_until="load", timeout=90000)
-    time.sleep(4)
+    page.goto(url_final, wait_until="domcontentloaded", timeout=90000)
+    time.sleep(3)
 
     try:
         btn_cookie = page.locator("button:has-text('Permitir'), button:has-text('Allow'), button:has-text('Aceptar')").first
-        if btn_cookie.is_visible(timeout=3000):
+        if btn_cookie.is_visible(timeout=2500):
             btn_cookie.click()
             time.sleep(1)
     except Exception:
         pass
 
-    print("📜 Desplazando y leyendo anuncios...")
-    for _ in range(12):
-        page.mouse.wheel(0, 3000)
+    print("📜 Desplazando y cargando creatividades de Meta...")
+    prev_ads_count = 0
+    intentos_sin_cambio = 0
+
+    for _ in range(25):
+        page.mouse.wheel(0, 3500)
         time.sleep(1.2)
+        
+        current_ads = page.locator("text=/Identificador de la biblioteca|Library ID|ID:/i").count()
+        if current_ads > prev_ads_count:
+            prev_ads_count = current_ads
+            intentos_sin_cambio = 0
+        else:
+            intentos_sin_cambio += 1
+            if intentos_sin_cambio >= 4:
+                break
 
     datos_anuncios = page.evaluate(r"""(nombreBuscado) => {
         const resultados = [];
-        const todos = Array.from(document.querySelectorAll('*'));
-
-        const elementosId = todos.filter(el => {
+        
+        // 1. Localizar los identificadores visibles de biblioteca
+        const elementosTexto = Array.from(document.querySelectorAll('*')).filter(el => {
             const txt = el.innerText || '';
-            return /(?:Identificador de la biblioteca|Library ID|ID):\s*\d{10,}/i.test(txt) && el.children.length <= 2;
+            return /(?:Identificador de la biblioteca|Library ID|ID):\s*\d{10,}/i.test(txt) && el.children.length === 0;
         });
 
-        elementosId.forEach(elemId => {
+        elementosTexto.forEach(elemId => {
             const txtId = elemId.innerText || '';
             const matchId = txtId.match(/(?:Identificador de la biblioteca|Library ID|ID):\s*(\d{10,})/i);
             if (!matchId) return;
             const adId = matchId[1];
 
+            // 2. Ascenso hacia la tarjeta contenedora que contiene tanto la ficha superior como la creatividad
             let card = elemId;
-            for (let i = 0; i < 8; i++) {
-                if (card.parentElement && card.parentElement.offsetHeight > 150) {
+            while (card && card.parentElement && card.parentElement !== document.body) {
+                const rect = card.parentElement.getBoundingClientRect();
+                const htmlP = card.parentElement.innerHTML || '';
+                if (rect.height > 260 && rect.width > 220 && rect.width < 950 && (htmlP.includes('Publicidad') || htmlP.includes('Sponsored') || htmlP.includes('Ver detalles'))) {
+                    card = card.parentElement;
+                } else if (rect.height > 260 && rect.width >= 950) {
+                    break;
+                } else {
                     card = card.parentElement;
                 }
             }
+            if (!card) return;
 
             const cardText = card.innerText || '';
-            const htmlText = card.innerHTML || '';
             const lineas = cardText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
+            // 3. ESTADO: Buscar la etiqueta inicial que contiene "Activo" o "Inactivo"
             let estadoAnuncio = "Activo";
-            if (/(?:inactivo|inactive)/i.test(cardText)) {
+            const textoSuperior = cardText.substring(0, 300);
+            if (/\b(?:inactivo|inactive)\b/i.test(textoSuperior)) {
                 estadoAnuncio = "Inactivo";
+            } else if (/\b(?:activo|active)\b/i.test(textoSuperior)) {
+                estadoAnuncio = "Activo";
             }
 
-            let empresa = nombreBuscado;
-            const idxPubli = lineas.findIndex(l => /^(?:publicidad|sponsored)$/i.test(l));
-            if (idxPubli > 0) {
-                empresa = lineas[idxPubli - 1];
-            } else if (lineas.length > 0) {
-                for (let l of lineas) {
-                    if (l.length > 2 && !l.includes(':') && !l.toLowerCase().includes('identificador') && !l.toLowerCase().includes('activo')) {
-                        empresa = l;
-                        break;
-                    }
-                }
+            // 4. PLATAFORMAS: Buscar la sección exacta que dice "Plataformas"
+            const plataformas = new Set();
+            const elementosPlataforma = Array.from(card.querySelectorAll('*')).filter(el => {
+                const t = (el.innerText || '').trim();
+                return /^Plataformas\b/i.test(t) && el.children.length <= 6;
+            });
+
+            let contenedorPlataformas = elementosPlataforma.length > 0 ? elementosPlataforma[0] : null;
+            if (contenedorPlataformas && contenedorPlataformas.parentElement) {
+                // Analizar el contenedor de iconos adyacente a la palabra "Plataformas"
+                const zonaIconos = contenedorPlataformas.parentElement.innerHTML.toLowerCase();
+                if (zonaIconos.includes('facebook') || zonaIconos.includes('fb') || zonaIconos.includes('24709225')) plataformas.add('Facebook');
+                if (zonaIconos.includes('instagram') || zonaIconos.includes('ig')) plataformas.add('Instagram');
+                if (zonaIconos.includes('threads') || zonaIconos.includes('hilos')) plataformas.add('Threads');
+                if (zonaIconos.includes('messenger') || zonaIconos.includes('msgr')) plataformas.add('Messenger');
+                if (zonaIconos.includes('audience') || zonaIconos.includes('network')) plataformas.add('Audience Network');
             }
 
+            // Respaldo por atributos aria y SVG dentro de la tarjeta
+            if (plataformas.size === 0) {
+                const svgs = Array.from(card.querySelectorAll('svg, i, [aria-label], [role="img"]'));
+                svgs.forEach(s => {
+                    const aria = ((s.getAttribute('aria-label') || '') + ' ' + (s.outerHTML || '')).toLowerCase();
+                    if (aria.includes('facebook')) plataformas.add('Facebook');
+                    if (aria.includes('instagram')) plataformas.add('Instagram');
+                    if (aria.includes('threads')) plataformas.add('Threads');
+                    if (aria.includes('messenger')) plataformas.add('Messenger');
+                    if (aria.includes('audience')) plataformas.add('Audience Network');
+                });
+            }
+
+            const plataformasFinal = plataformas.size > 0 ? Array.from(plataformas).join(', ') : 'Facebook';
+
+            // 5. FECHA DE SUBIDA
             let fechaTexto = "";
             const matchFecha = cardText.match(/(?:En circulaci[oó]n desde(?: el)?|Started running on)\s*:?\s*([^\n·•]+)/i);
             if (matchFecha) {
                 fechaTexto = matchFecha[1].trim();
             }
 
-            const plataformas = [];
-            const headerHtml = htmlText.substring(0, 4000).toLowerCase();
-            const headerText = cardText.substring(0, 600).toLowerCase();
-            const blobTexto = headerHtml + ' ' + headerText;
-
-            if (blobTexto.includes('facebook') || blobTexto.includes('_fb') || blobTexto.includes('fb_icon')) {
-                plataformas.push('Facebook');
-            }
-            if (blobTexto.includes('instagram') || blobTexto.includes('_ig') || blobTexto.includes('ig_icon')) {
-                plataformas.push('Instagram');
-            }
-            if (blobTexto.includes('threads') || blobTexto.includes('hilos')) {
-                plataformas.push('Threads');
-            }
-            if (blobTexto.includes('messenger') || blobTexto.includes('msgr')) {
-                plataformas.push('Messenger');
-            }
-            if (blobTexto.includes('audience') || blobTexto.includes('an_icon') || blobTexto.includes('audience network')) {
-                plataformas.push('Audience Network');
+            // 6. EMPRESA (Texto ubicado encima de "Publicidad")
+            let empresa = nombreBuscado;
+            const idxPubli = lineas.findIndex(l => /^(?:publicidad|sponsored)$/i.test(l));
+            if (idxPubli > 0) {
+                empresa = lineas[idxPubli - 1];
             }
 
-            const plataformasFinal = plataformas.length > 0 ? Array.from(new Set(plataformas)).join(', ') : 'Facebook';
-
+            // 7. FORMATO (Presencia de tag video, botón circular de play '▶' o duración)
             let duracionSegundos = 0;
             const videoEl = card.querySelector('video');
+            const playButton = card.querySelector('[aria-label*="reproducir" i], [aria-label*="play" i], [aria-label*="video" i], svg polygon, svg path[d*="M8"], svg path[d*="M5"]');
             const hasVideo = videoEl !== null || 
-                             htmlText.includes('video') || 
-                             htmlText.includes('play') || 
-                             htmlText.includes('reproducir') || 
-                             htmlText.includes('blob:') ||
-                             /\b\d{1,2}:\d{2}\b/.test(cardText);
+                             playButton !== null ||
+                             /\b\d{1,2}:\d{2}\b/.test(cardText) || 
+                             card.innerHTML.includes('video/mp4') || 
+                             card.innerHTML.includes('blob:');
 
             if (videoEl && videoEl.duration && !isNaN(videoEl.duration) && videoEl.duration > 0) {
                 duracionSegundos = Math.round(videoEl.duration);
@@ -435,16 +464,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
                 }
             }
 
-            if (duracionSegundos === 0) {
-                const elementosData = Array.from(card.querySelectorAll('[data-duration], [aria-valuemax]'));
-                elementosData.forEach(ed => {
-                    const d = parseFloat(ed.getAttribute('data-duration') || ed.getAttribute('aria-valuemax') || '0');
-                    if (d > 0) {
-                        duracionSegundos = Math.round(d > 1000 ? d / 1000 : d);
-                    }
-                });
-            }
-
+            // 8. TEXTO / COPY DEL ANUNCIO (Texto debajo de 'Publicidad' y encima del contenido visual)
             let rawCopy = "";
             const copyContainers = Array.from(card.querySelectorAll('div[style*="white-space: pre-wrap"], div[dir="auto"], span[dir="auto"]'));
             for (const c of copyContainers) {
@@ -454,8 +474,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
                     txt.length > 15 &&
                     !low.includes('identificador') && !low.includes('library id') &&
                     !low.includes('en circulación') && !low.includes('started running') &&
-                    !low.includes('plataformas') && !low.includes('abrir menú') &&
-                    !low.includes('desplegable') && !low.includes('ver detalles') &&
+                    !low.includes('plataformas') && !low.includes('ver detalles') &&
                     txt !== empresa
                 ) {
                     rawCopy = txt;
@@ -464,22 +483,16 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
             }
 
             if (!rawCopy) {
-                const parrafos = [];
-                lineas.forEach(l => {
+                const parrafos = lineas.filter(l => {
                     const low = l.toLowerCase();
-                    if (
+                    return !(
                         low.includes('identificador') || low.includes('library id') ||
                         low.includes('en circulación') || low.includes('started running') ||
                         low.includes('activo') || low.includes('inactivo') ||
                         low.includes('publicidad') || low.includes('sponsored') ||
-                        low.includes('ver detalles') || low.includes('see ad details') ||
-                        low.includes('más información') || low.includes('enviar mensaje') ||
-                        low.includes('plataformas') || low.includes('abrir menú') ||
-                        low.includes('abrir menu') || low.includes('desplegable') ||
-                        low.includes('dropdown') || low.includes('versiones') ||
-                        l === empresa
-                    ) return;
-                    if (l.length > 5) parrafos.push(l);
+                        low.includes('ver detalles') || low.includes('plataformas') ||
+                        low.includes('versiones') || l === empresa || l.length <= 5
+                    );
                 });
                 rawCopy = parrafos.slice(0, 3).join(' ');
             }
@@ -512,7 +525,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
         busq_limpia = re.sub(r'[^\w\s]', '', nombre_bot.lower()).strip()
         actual_limpia = re.sub(r'[^\w\s]', '', empresa_actual.lower()).strip()
 
-        es_valida = (busq_limpia in actual_limpia) or (actual_limpia in busq_limpia) or (actual_limpia == "")
+        es_valida = (busq_limpia in actual_limpia) or (actual_limpia in busq_limpia) or len(actual_limpia) == 0 or len(busq_limpia) == 0
         if not es_valida:
             continue
 
@@ -537,7 +550,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
 
         anuncio_data = {
             "id_anuncio": ad_id,
-            "compania": nombre_flask,  # Se guarda con el nombre del Dashboard
+            "compania": nombre_flask,
             "fecha_subida": fecha_final,
             "estado": item["estado"],
             "plataformas": item["plataformas"],
@@ -593,7 +606,7 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             viewport={"width": 1440, "height": 900}
         )
         page = context.new_page()
