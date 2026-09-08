@@ -9,6 +9,10 @@ import psycopg2
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
 load_dotenv()
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -104,6 +108,7 @@ def inicializar_bd():
                 fecha_bloqueo TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS presente_en_meta BOOLEAN DEFAULT TRUE;")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS anuncios_link_idx ON anuncios (link_individual);")
         conn.commit()
         cur.close()
@@ -172,9 +177,9 @@ def guardar_anuncio(anuncio, bloqueadas):
             ad_id = anuncio['link_individual'].split('id=')[-1]
 
         query = """
-            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, plataformas, formato, duracion_segundos, titulo, link_individual)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (link_individual) DO UPDATE 
+            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, plataformas, formato, duracion_segundos, titulo, link_individual, presente_en_meta)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+            ON CONFLICT (link_individual) DO UPDATE
             SET id_anuncio = COALESCE(NULLIF(EXCLUDED.id_anuncio, ''), NULLIF(anuncios.id_anuncio, '')),
                 compania = EXCLUDED.compania,
                 fecha_subida = COALESCE(NULLIF(EXCLUDED.fecha_subida, ''), NULLIF(anuncios.fecha_subida, '')),
@@ -192,11 +197,12 @@ def guardar_anuncio(anuncio, bloqueadas):
                     WHEN EXCLUDED.duracion_segundos > 0 THEN EXCLUDED.duracion_segundos 
                     ELSE COALESCE(anuncios.duracion_segundos, 0)
                 END,
-                titulo = CASE 
-                    WHEN LENGTH(EXCLUDED.titulo) > LENGTH(COALESCE(anuncios.titulo, '')) 
-                    THEN EXCLUDED.titulo 
+                titulo = CASE
+                    WHEN LENGTH(EXCLUDED.titulo) > LENGTH(COALESCE(anuncios.titulo, ''))
+                    THEN EXCLUDED.titulo
                     ELSE COALESCE(NULLIF(anuncios.titulo, ''), EXCLUDED.titulo)
-                END
+                END,
+                presente_en_meta = TRUE
             RETURNING id;
         """
         cur.execute(query, (
@@ -232,6 +238,21 @@ def guardar_anuncio(anuncio, bloqueadas):
     except Exception as e:
         print(f"  ⚠️ Error BD: {e}")
         return False
+
+def marcar_no_detectados(compania, links_encontrados):
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE anuncios
+            SET presente_en_meta = FALSE
+            WHERE compania = %s AND link_individual != ALL(%s) AND presente_en_meta IS DISTINCT FROM FALSE;
+        """, (compania, links_encontrados))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"  ⚠️ Error actualizando anuncios retirados de Meta: {e}")
 
 def preparar_url_completa(url_base, dias_atras=30):
     parsed = urllib.parse.urlparse(url_base)
@@ -410,62 +431,33 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
             }
 
             // 2. DETECCIÓN PRECISA DE TODAS LAS PLATAFORMAS
+            // Meta no expone el nombre de la red en aria-label ni en SVGs: cada icono es un
+            // <div> con mask-image (sprite) + mask-position. Coordenadas verificadas a mano
+            // contra el sprite real de Meta (sept. 2026) comparando docenas de anuncios.
             const plataformas = new Set();
 
-            // Meta incluye un botón o grupo cuyo aria-label lista las redes o dice "Plataformas"
-            const elementosDropdown = Array.from(card.querySelectorAll('[aria-label*="plataforma" i], [aria-label*="platform" i], [title*="plataforma" i], [title*="platform" i], div[role="button"]'));
-            
-            elementosDropdown.forEach(el => {
-                const label = ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).toLowerCase();
-                if (label.includes('facebook')) plataformas.add('Facebook');
-                if (label.includes('instagram')) plataformas.add('Instagram');
-                if (label.includes('threads')) plataformas.add('Threads');
-                if (label.includes('messenger')) plataformas.add('Messenger');
-                if (label.includes('audience') || label.includes('network')) plataformas.add('Audience Network');
+            const platformSpan = Array.from(card.querySelectorAll('span')).find(s => {
+                const t = (s.innerText || '').trim().toLowerCase();
+                return t === 'platforms' || t === 'plataformas';
             });
 
-            // Si los aria-labels no traían los nombres, inspeccionar los iconos en la fila de plataformas
-            const nodosPlataforma = Array.from(card.querySelectorAll('*')).filter(el => {
-                const t = (el.innerText || '').trim();
-                return /^plataformas\s*:?/i.test(t) && el.children.length <= 2;
-            });
-
-            if (nodosPlataforma.length > 0) {
-                let contenedorFila = nodosPlataforma[0].parentElement;
-                for (let k = 0; k < 3; k++) {
-                    if (contenedorFila && contenedorFila.querySelectorAll('svg, i, div[role="img"], span[role="img"]').length >= 1) break;
-                    if (contenedorFila && contenedorFila.parentElement) contenedorFila = contenedorFila.parentElement;
-                }
-
-                const elementosGraficos = Array.from(contenedorFila.querySelectorAll('svg, i, div[role="img"], span[role="img"], img, path'));
-                elementosGraficos.forEach(ico => {
-                    const raw = (ico.outerHTML || '').toLowerCase();
-                    const dAttr = (ico.getAttribute('d') || '').toLowerCase();
-
-                    // Instagram
-                    if (raw.includes('instagram') || raw.includes('circle') || dAttr.includes('m12 2.163') || dAttr.includes('m12 7a5') || raw.includes('r="3.') || raw.includes('r="2.')) {
-                        plataformas.add('Instagram');
-                    }
-                    // Facebook
-                    if (raw.includes('facebook') || raw.includes('_fb') || dAttr.includes('m24 12.073') || dAttr.includes('m12 2.04') || dAttr.includes('v-3h-2v-4h2v-2') || dAttr.includes('v-1.9c0-1.9')) {
-                        plataformas.add('Facebook');
-                    }
-                    // Messenger
-                    if (raw.includes('messenger') || raw.includes('msgr') || dAttr.includes('l-3.5 5.5') || dAttr.includes('l3.5-5.5') || (dAttr.includes('m12 2c-5.52') && dAttr.includes('l-3'))) {
-                        plataformas.add('Messenger');
-                    }
-                    // Audience Network
-                    if (raw.includes('audience') || raw.includes('network') || raw.includes('globe') || dAttr.includes('m12 2a10 10') || dAttr.includes('a10 10 0 1 0') || dAttr.includes('c-3.1 0-5.8')) {
-                        plataformas.add('Audience Network');
-                    }
-                    // Threads
-                    if (raw.includes('threads') || raw.includes('hilos')) {
-                        plataformas.add('Threads');
-                    }
+            if (platformSpan && platformSpan.parentElement) {
+                const iconos = Array.from(platformSpan.parentElement.querySelectorAll('.xtwfq29'));
+                iconos.forEach(ico => {
+                    const style = ico.getAttribute('style') || '';
+                    const m = style.match(/mask-position:\s*(-?\d+)px\s+(-?\d+)px/);
+                    if (!m) return;
+                    const x = parseInt(m[1], 10);
+                    const y = parseInt(m[2], 10);
+                    if (x === 0 && y === -955) plataformas.add('Facebook');
+                    else if (x === 0 && y === -1007) plataformas.add('Instagram');
+                    else if (x === -388 && y === -732) plataformas.add('Audience Network');
+                    else if (x === -387 && y === -753) plataformas.add('Messenger');
+                    else if (x === -387 && y === -766) plataformas.add('Threads');
                 });
             }
 
-            // Fallback de cabecera
+            // Fallback de cabecera (por si Meta cambia el sprite): busca menciones literales
             if (plataformas.size === 0) {
                 const headerHtml = card.innerHTML.substring(0, 3000).toLowerCase();
                 if (headerHtml.includes('facebook')) plataformas.add('Facebook');
@@ -586,6 +578,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
 
     vistos = set()
     guardados = 0
+    links_encontrados = []
 
     for item in datos_anuncios:
         ad_id = item["id"]
@@ -620,6 +613,9 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
 
         titulo_definitivo = limpiar_texto_copy(item["copy"], nombre_flask)
 
+        link_individual = f"https://www.facebook.com/ads/library/?id={ad_id}"
+        links_encontrados.append(link_individual)
+
         anuncio_data = {
             "id_anuncio": ad_id,
             "compania": nombre_flask,
@@ -629,7 +625,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
             "formato": formato,
             "duracion_segundos": duracion_final,
             "titulo": titulo_definitivo[:400],
-            "link_individual": f"https://www.facebook.com/ads/library/?id={ad_id}"
+            "link_individual": link_individual
         }
 
         if guardar_anuncio(anuncio_data, bloqueadas):
@@ -638,6 +634,9 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
             print(f"  ✨ [{icono}] [{badge_estado}] {nombre_flask} | Plat: {item['plataformas']} | Dur: {dur_txt} | Fecha: {fecha_final} | Titulo: {titulo_definitivo[:40]}...")
 
     print(f"✅ Anuncios registrados para {nombre_flask}: {guardados}")
+
+    if datos_anuncios and nombre_flask.lower() not in bloqueadas:
+        marcar_no_detectados(nombre_flask, links_encontrados)
 
 def main():
     inicializar_bd()

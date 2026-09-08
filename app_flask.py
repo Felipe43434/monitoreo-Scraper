@@ -9,18 +9,26 @@ from datetime import datetime, timedelta
 from collections import Counter
 from functools import wraps
 import pandas as pd
+from dotenv import load_dotenv
 from flask import Flask, render_template_string, request, redirect, url_for, send_file, session
 
+load_dotenv()
+
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "meta-ads-intelligence-secret-2026")
+
+FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
+if not FLASK_SECRET_KEY or not DASHBOARD_PASSWORD:
+    raise RuntimeError(
+        "Faltan variables de entorno obligatorias: FLASK_SECRET_KEY y/o DASHBOARD_PASSWORD."
+    )
+app.secret_key = FLASK_SECRET_KEY
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 WORKFLOW_FILE = "scraper.yml"
 URLS_FILE_PATH = "urls.txt"
-
-DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "UnaClaveMuySegura2026")
 
 DIAS_WINNING_AD = 30
 
@@ -60,7 +68,11 @@ def get_db_connection():
     if "sslmode=" not in url:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}sslmode=require"
-    return psycopg2.connect(url)
+    try:
+        return psycopg2.connect(url, connect_timeout=8)
+    except Exception as e:
+        print(f"Error conectando a la base de datos: {e}")
+        return None
 
 def init_config_tables():
     conn = get_db_connection()
@@ -74,6 +86,7 @@ def init_config_tables():
                         fecha_bloqueo TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
+                cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS presente_en_meta BOOLEAN DEFAULT TRUE;")
                 conn.commit()
         except Exception as e:
             print(f"Error inicializando tablas: {e}")
@@ -223,6 +236,38 @@ def render_plataformas_badges(val):
     if not badges:
         return f'<span class="badge bg-secondary-subtle text-secondary" style="font-size: 0.68rem;">{val}</span>'
     return ' '.join(badges)
+
+def construir_timeline(lista_anuncios, top_companias):
+    timeline_dict = {}
+    for a in lista_anuncios:
+        f_norm = parse_date_str(a.get('fecha_display'))
+        if f_norm:
+            comp = a.get('compania', 'Otras')
+            if f_norm not in timeline_dict:
+                timeline_dict[f_norm] = {}
+            timeline_dict[f_norm][comp] = timeline_dict[f_norm].get(comp, 0) + 1
+
+    sorted_dates = sorted(timeline_dict.keys())
+    palette = ['#0284c7', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4']
+    shapes = ['circle', 'triangle', 'rect', 'rectRot', 'star', 'cross', 'crossRot']
+
+    datasets = []
+    for idx, comp in enumerate(top_companias):
+        data = [timeline_dict[d].get(comp, 0) for d in sorted_dates]
+        color = palette[idx % len(palette)]
+        shape = shapes[idx % len(shapes)]
+        datasets.append({
+            "label": comp,
+            "data": data,
+            "borderColor": color,
+            "backgroundColor": color,
+            "pointStyle": shape,
+            "pointRadius": 6,
+            "pointHoverRadius": 8,
+            "tension": 0.25
+        })
+
+    return {"labels": sorted_dates, "datasets": datasets}
 
 LOGIN_TEMPLATE = """
 <!DOCTYPE html>
@@ -746,11 +791,17 @@ HTML_TEMPLATE = """
                     <div class="card-custom p-3 h-100">
                         <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
                             <h6 class="fw-bold m-0"><i class="bi bi-graph-up"></i> Publicación de Anuncios por Empresa</h6>
-                            <div class="btn-group btn-group-sm" role="group" id="timeRangeFilter">
-                                <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(7, this)">7D</button>
-                                <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(30, this)">30D</button>
-                                <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(365, this)">1A</button>
-                                <button type="button" class="btn btn-primary active" onclick="filterTimeline(0, this)">Todo</button>
+                            <div class="d-flex flex-wrap gap-2">
+                                <div class="btn-group btn-group-sm" role="group" id="timelineModoFilter">
+                                    <button type="button" class="btn btn-primary active" onclick="setTimelineModo('historico', this)">Históricos</button>
+                                    <button type="button" class="btn btn-outline-secondary" onclick="setTimelineModo('actual', this)">Actuales en Meta</button>
+                                </div>
+                                <div class="btn-group btn-group-sm" role="group" id="timeRangeFilter">
+                                    <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(7, this)">7D</button>
+                                    <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(30, this)">30D</button>
+                                    <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(365, this)">1A</button>
+                                    <button type="button" class="btn btn-primary active" onclick="filterTimeline(0, this)">Todo</button>
+                                </div>
                             </div>
                         </div>
                         <div style="height: 330px; position: relative;">
@@ -1307,11 +1358,14 @@ HTML_TEMPLATE = """
         }, 1000);
     }
 
-    const rawTimelineData = {{ timeline_data|tojson }};
+    const rawTimelineDataHistorico = {{ timeline_data_historico|tojson }};
+    const rawTimelineDataActual = {{ timeline_data_actual|tojson }};
     const formatData = {{ format_data|tojson }};
     const keywordsData = {{ keywords_chart_data|tojson }};
 
     let timelineChartInstance = null;
+    let timelineModo = 'historico';
+    let timelineDiasActual = 0;
 
     function renderTimeline(labels, datasets) {
         if (!document.getElementById('timelineChart')) return;
@@ -1352,7 +1406,21 @@ HTML_TEMPLATE = """
         });
     }
 
+    function setTimelineModo(modo, btnElement) {
+        timelineModo = modo;
+        if (btnElement) {
+            document.querySelectorAll('#timelineModoFilter button').forEach(b => {
+                b.classList.remove('btn-primary', 'active');
+                b.classList.add('btn-outline-secondary');
+            });
+            btnElement.classList.remove('btn-outline-secondary');
+            btnElement.classList.add('btn-primary', 'active');
+        }
+        filterTimeline(timelineDiasActual, null);
+    }
+
     function filterTimeline(days, btnElement) {
+        timelineDiasActual = days;
         if (btnElement) {
             document.querySelectorAll('#timeRangeFilter button').forEach(b => {
                 b.classList.remove('btn-primary', 'active');
@@ -1361,6 +1429,8 @@ HTML_TEMPLATE = """
             btnElement.classList.remove('btn-outline-secondary');
             btnElement.classList.add('btn-primary', 'active');
         }
+
+        const rawTimelineData = timelineModo === 'actual' ? rawTimelineDataActual : rawTimelineDataHistorico;
 
         if (!rawTimelineData.labels || rawTimelineData.labels.length === 0) {
             renderTimeline([], []);
@@ -1556,9 +1626,9 @@ def index():
                     params.append(companias_bloqueadas)
 
                 if q:
-                    query += " AND (texto ILIKE %s OR titulo ILIKE %s OR link_individual ILIKE %s)"
+                    query += " AND (titulo ILIKE %s OR link_individual ILIKE %s)"
                     like_val = f"%{q}%"
-                    params.extend([like_val, like_val, like_val])
+                    params.extend([like_val, like_val])
                 if companias_sel:
                     query += " AND compania = ANY(%s)"
                     params.append(companias_sel)
@@ -1668,37 +1738,11 @@ def index():
         "values": [p[1] for p in top_palabras]
     }
 
-    timeline_dict = {}
-    for a in anuncios:
-        f_norm = parse_date_str(a.get('fecha_display'))
-        if f_norm:
-            comp = a.get('compania', 'Otras')
-            if f_norm not in timeline_dict:
-                timeline_dict[f_norm] = {}
-            timeline_dict[f_norm][comp] = timeline_dict[f_norm].get(comp, 0) + 1
-
-    sorted_dates = sorted(timeline_dict.keys())
     top_companias = list(companias_set)[:7]
-    palette = ['#0284c7', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4']
-    shapes = ['circle', 'triangle', 'rect', 'rectRot', 'star', 'cross', 'crossRot']
+    timeline_data_historico = construir_timeline(anuncios, top_companias)
+    anuncios_actuales_meta = [a for a in anuncios if a.get('presente_en_meta')]
+    timeline_data_actual = construir_timeline(anuncios_actuales_meta, top_companias)
 
-    datasets = []
-    for idx, comp in enumerate(top_companias):
-        data = [timeline_dict[d].get(comp, 0) for d in sorted_dates]
-        color = palette[idx % len(palette)]
-        shape = shapes[idx % len(shapes)]
-        datasets.append({
-            "label": comp,
-            "data": data,
-            "borderColor": color,
-            "backgroundColor": color,
-            "pointStyle": shape,
-            "pointRadius": 6,
-            "pointHoverRadius": 8,
-            "tension": 0.25
-        })
-
-    timeline_data = {"labels": sorted_dates, "datasets": datasets}
     format_data = {
         "videos": total_videos,
         "imagenes": total_fotos,
@@ -1728,7 +1772,8 @@ def index():
         total_retirados=total_retirados,
         top_palabras=top_palabras,
         keywords_chart_data=keywords_chart_data,
-        timeline_data=timeline_data,
+        timeline_data_historico=timeline_data_historico,
+        timeline_data_actual=timeline_data_actual,
         format_data=format_data,
         stats_empresas=stats_empresas,
         msg=msg
@@ -1834,9 +1879,9 @@ def descargar_excel():
             params.append(companias_bloqueadas)
 
         if q:
-            query += " AND (texto ILIKE %s OR titulo ILIKE %s OR link_individual ILIKE %s)"
+            query += " AND (titulo ILIKE %s OR link_individual ILIKE %s)"
             like_val = f"%{q}%"
-            params.extend([like_val, like_val, like_val])
+            params.extend([like_val, like_val])
         if companias_sel:
             query += " AND compania = ANY(%s)"
             params.append(companias_sel)
