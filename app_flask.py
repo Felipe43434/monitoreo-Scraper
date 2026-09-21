@@ -74,6 +74,28 @@ def get_db_connection():
         print(f"Error conectando a la base de datos: {e}")
         return None
 
+def obtener_ip_cliente():
+    forwarded = request.headers.get('X-Forwarded-For', '')
+    if forwarded:
+        return forwarded.split(',')[0].strip()
+    return request.remote_addr or 'desconocida'
+
+def registrar_acceso():
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO accesos_dashboard (ip_address, user_agent) VALUES (%s, %s)",
+                (obtener_ip_cliente(), request.headers.get('User-Agent', ''))
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"Error registrando acceso: {e}")
+    finally:
+        conn.close()
+
 def init_config_tables():
     conn = get_db_connection()
     if conn:
@@ -87,6 +109,14 @@ def init_config_tables():
                     );
                 """)
                 cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS presente_en_meta BOOLEAN DEFAULT TRUE;")
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS accesos_dashboard (
+                        id SERIAL PRIMARY KEY,
+                        fecha_acceso TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        ip_address VARCHAR(100),
+                        user_agent TEXT
+                    );
+                """)
                 conn.commit()
         except Exception as e:
             print(f"Error inicializando tablas: {e}")
@@ -1537,6 +1567,7 @@ def login():
     if request.method == 'POST':
         if request.form.get('password') == DASHBOARD_PASSWORD:
             session['logged_in'] = True
+            registrar_acceso()
             return redirect(url_for('index'))
         else:
             error = "Contraseña incorrecta. Inténtalo de nuevo."
