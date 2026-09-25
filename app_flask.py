@@ -948,7 +948,7 @@ HTML_TEMPLATE = """
                             <div class="d-flex flex-wrap gap-2">
                                 <div class="btn-group btn-group-sm" role="group" id="timelineModoFilter">
                                     <button type="button" class="btn btn-primary active" onclick="setTimelineModo('historico', this)">Históricos</button>
-                                    <button type="button" class="btn btn-outline-secondary" onclick="setTimelineModo('actual', this)">Actuales en Meta</button>
+                                    <button type="button" class="btn btn-outline-secondary" onclick="setTimelineModo('actual', this)" title="Anuncios que siguen publicados en Meta o Google">Actuales</button>
                                 </div>
                                 <div class="btn-group btn-group-sm" role="group" id="timeRangeFilter">
                                     <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(7, this)">7D</button>
