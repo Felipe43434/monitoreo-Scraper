@@ -346,7 +346,7 @@ LOGIN_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Acceso | Meta Ads Intelligence</title>
+    <title>Acceso | Gálac Ads Intelligence</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <style>
@@ -379,7 +379,7 @@ LOGIN_TEMPLATE = """
             <i class="bi bi-shield-lock-fill fs-2"></i>
         </div>
         <h4 class="fw-bold mb-1">Acceso Protegido</h4>
-        <p class="text-secondary small">Meta Ads Intelligence Dashboard</p>
+        <p class="text-secondary small">Gálac Ads Intelligence Dashboard</p>
     </div>
 
     {% if error %}
@@ -410,7 +410,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Meta Ads Intelligence</title>
+    <title>Gálac Ads Intelligence</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -492,7 +492,7 @@ HTML_TEMPLATE = """
     <div class="container-fluid">
         <a class="navbar-brand d-flex align-items-center gap-2" href="/">
             <i class="bi bi-graph-up-arrow text-primary fs-4"></i>
-            <span class="fw-bold tracking-tight">Meta Ads Intelligence</span>
+            <span class="fw-bold tracking-tight">Gálac Ads Intelligence</span>
         </a>
         <div class="d-flex align-items-center gap-2 ms-auto">
             
