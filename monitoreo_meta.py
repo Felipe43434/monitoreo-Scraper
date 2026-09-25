@@ -109,6 +109,7 @@ def inicializar_bd():
             );
         """)
         cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS presente_en_meta BOOLEAN DEFAULT TRUE;")
+        cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fuente VARCHAR(20) DEFAULT 'Meta';")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS anuncios_link_idx ON anuncios (link_individual);")
         conn.commit()
         cur.close()
@@ -239,15 +240,20 @@ def guardar_anuncio(anuncio, bloqueadas):
         print(f"  ⚠️ Error BD: {e}")
         return False
 
-def marcar_no_detectados(compania, links_encontrados):
+def marcar_no_detectados(compania, links_encontrados, fecha_desde=None):
+    # Solo se evalúan anuncios que caían dentro de la ventana buscada: un anuncio más viejo
+    # que fecha_desde no sale en la búsqueda aunque siga activo.
     try:
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
         cur = conn.cursor()
         cur.execute("""
             UPDATE anuncios
             SET presente_en_meta = FALSE
-            WHERE compania = %s AND link_individual != ALL(%s) AND presente_en_meta IS DISTINCT FROM FALSE;
-        """, (compania, links_encontrados))
+            WHERE compania = %s AND COALESCE(fuente, 'Meta') = 'Meta'
+              AND link_individual != ALL(%s)
+              AND presente_en_meta IS DISTINCT FROM FALSE
+              AND (%s IS NULL OR fecha_subida >= %s);
+        """, (compania, links_encontrados, fecha_desde, fecha_desde))
         conn.commit()
         cur.close()
         conn.close()
@@ -318,7 +324,7 @@ def extraer_fecha_json_profundo(obj):
                 return f
     return None
 
-def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
+def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fecha_desde=None):
     print(f"\n🌐 Abriendo: {url_final}")
     print(f"🎯 Monitoreando: '{nombre_flask}' (Búsqueda bot: '{nombre_bot}')")
 
@@ -636,7 +642,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas):
     print(f"✅ Anuncios registrados para {nombre_flask}: {guardados}")
 
     if datos_anuncios and nombre_flask.lower() not in bloqueadas:
-        marcar_no_detectados(nombre_flask, links_encontrados)
+        marcar_no_detectados(nombre_flask, links_encontrados, fecha_desde)
 
 def main():
     inicializar_bd()
@@ -682,13 +688,15 @@ def main():
         )
         page = context.new_page()
 
+        fecha_desde = (datetime.today() - timedelta(days=dias)).strftime('%Y-%m-%d') if dias else None
+
         for indice, (nombre_flask, nombre_bot, url_base) in enumerate(entradas, 1):
             pct = int(((indice - 1) / total_empresas) * 100)
             actualizar_progreso(activo=True, actual=indice, total=total_empresas, empresa=nombre_flask, porcentaje=pct, finalizado=False)
             
             url_final = preparar_url_completa(url_base, dias)
             try:
-                extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas)
+                extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fecha_desde)
             except Exception as e:
                 print(f"❌ Error en {nombre_flask}: {e}")
 

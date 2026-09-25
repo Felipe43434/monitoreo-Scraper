@@ -28,7 +28,9 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 WORKFLOW_FILE = "scraper.yml"
+WORKFLOW_GOOGLE_FILE = "scraper_google.yml"
 URLS_FILE_PATH = "urls.txt"
+URLS_GOOGLE_FILE_PATH = "urls_google.txt"
 
 DIAS_WINNING_AD = 30
 
@@ -109,6 +111,22 @@ def init_config_tables():
                     );
                 """)
                 cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS presente_en_meta BOOLEAN DEFAULT TRUE;")
+                cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fuente VARCHAR(20) DEFAULT 'Meta';")
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS migraciones (
+                        nombre VARCHAR(100) PRIMARY KEY,
+                        fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                # Una sola vez: el bot de Meta marcaba como retirados anuncios activos más viejos
+                # que su ventana de búsqueda; se restablecen y la siguiente corrida los re-evalúa bien.
+                cur.execute("""
+                    INSERT INTO migraciones (nombre) VALUES ('reparar_presente_en_meta_2026_09')
+                    ON CONFLICT DO NOTHING RETURNING nombre;
+                """)
+                if cur.fetchone():
+                    cur.execute("UPDATE anuncios SET presente_en_meta = TRUE WHERE COALESCE(fuente, 'Meta') = 'Meta';")
+                    print(f"Migración aplicada: {cur.rowcount} anuncios de Meta restablecidos como presentes.")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS accesos_dashboard (
                         id SERIAL PRIMARY KEY,
@@ -125,10 +143,10 @@ def init_config_tables():
 
 init_config_tables()
 
-def get_github_urls_file():
+def get_github_urls_file(path=URLS_FILE_PATH):
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return "", None
-    url_api = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{URLS_FILE_PATH}"
+    url_api = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
@@ -141,15 +159,15 @@ def get_github_urls_file():
             return content, data.get('sha')
         return "", None
     except Exception as e:
-        print(f"Error leyendo urls.txt en GitHub: {e}")
+        print(f"Error leyendo {path} en GitHub: {e}")
         return "", None
 
-def update_github_urls_file(new_content, commit_message="Actualizar urls.txt desde Dashboard"):
+def update_github_urls_file(new_content, path=URLS_FILE_PATH):
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return False, "Falta configurar GITHUB_TOKEN o GITHUB_REPO."
-    
-    current_content, sha = get_github_urls_file()
-    url_api = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{URLS_FILE_PATH}"
+
+    current_content, sha = get_github_urls_file(path)
+    url_api = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
@@ -157,7 +175,7 @@ def update_github_urls_file(new_content, commit_message="Actualizar urls.txt des
     encoded_content = base64.b64encode(new_content.encode('utf-8')).decode('utf-8')
     
     payload = {
-        "message": commit_message,
+        "message": f"Actualizar {path} desde Dashboard",
         "content": encoded_content
     }
     if sha:
@@ -166,11 +184,22 @@ def update_github_urls_file(new_content, commit_message="Actualizar urls.txt des
     try:
         r = requests.put(url_api, json=payload, headers=headers, timeout=10)
         if r.status_code in [200, 201]:
-            return True, "Archivo urls.txt actualizado en GitHub exitosamente."
+            return True, f"Archivo {path} actualizado en GitHub exitosamente."
         else:
             return False, f"GitHub respondió con error {r.status_code}: {r.text}"
     except Exception as e:
         return False, f"Error conectando con GitHub: {e}"
+
+def parse_urls_google(raw_text):
+    items = []
+    for line in (raw_text or "").strip().splitlines():
+        line_clean = line.strip()
+        if not line_clean or line_clean.startswith('#'):
+            continue
+        parts = [p.strip() for p in line_clean.split('|')]
+        if len(parts) >= 2 and parts[1]:
+            items.append({'nombre_flask': parts[0], 'dominio': parts[1].lower()})
+    return items
 
 def parse_urls_txt(raw_text):
     items = []
@@ -262,6 +291,18 @@ def render_plataformas_badges(val):
         badges.append('<span class="badge bg-info text-dark" style="font-size: 0.68rem;"><i class="bi bi-messenger"></i> Messenger</span>')
     if 'audience' in s or 'network' in s:
         badges.append('<span class="badge bg-secondary text-light" style="font-size: 0.68rem;"><i class="bi bi-globe"></i> Audience Network</span>')
+    if 'búsqueda' in s:
+        badges.append('<span class="badge bg-success text-light" style="font-size: 0.68rem;"><i class="bi bi-google"></i> Búsqueda</span>')
+    if 'youtube' in s:
+        badges.append('<span class="badge bg-danger text-light" style="font-size: 0.68rem;"><i class="bi bi-youtube"></i> YouTube</span>')
+    if 'display' in s:
+        badges.append('<span class="badge bg-warning text-dark" style="font-size: 0.68rem;"><i class="bi bi-window"></i> Red de Display</span>')
+    if 'maps' in s:
+        badges.append('<span class="badge bg-success-subtle text-success" style="font-size: 0.68rem;"><i class="bi bi-geo-alt"></i> Maps</span>')
+    if 'google play' in s:
+        badges.append('<span class="badge bg-success-subtle text-success" style="font-size: 0.68rem;"><i class="bi bi-google-play"></i> Play</span>')
+    if 'shopping' in s:
+        badges.append('<span class="badge bg-success-subtle text-success" style="font-size: 0.68rem;"><i class="bi bi-bag"></i> Shopping</span>')
     
     if not badges:
         return f'<span class="badge bg-secondary-subtle text-secondary" style="font-size: 0.68rem;">{val}</span>'
@@ -456,7 +497,7 @@ HTML_TEMPLATE = """
         <div class="d-flex align-items-center gap-2 ms-auto">
             
             <button class="btn btn-sm btn-outline-light d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalConfigUrls">
-                <i class="bi bi-file-earmark-code fs-6"></i> urls.txt ({{ config_urls|length }})
+                <i class="bi bi-file-earmark-code fs-6"></i> URLs ({{ config_urls|length + config_google|length }})
             </button>
 
             <button class="btn btn-sm btn-outline-danger d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalBlockedCompanies">
@@ -515,10 +556,24 @@ HTML_TEMPLATE = """
     <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content card-custom">
             <div class="modal-header border-secondary border-opacity-25">
-                <h5 class="modal-title fw-bold"><i class="bi bi-file-earmark-text text-primary"></i> Editor de urls.txt (GitHub)</h5>
+                <h5 class="modal-title fw-bold"><i class="bi bi-file-earmark-text text-primary"></i> Editor de URLs (GitHub)</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body p-4">
+                <ul class="nav nav-tabs mb-3" role="tablist">
+                    <li class="nav-item">
+                        <button class="nav-link active fw-semibold" data-bs-toggle="tab" data-bs-target="#urls-tab-meta" type="button">
+                            <i class="bi bi-meta"></i> Meta ({{ config_urls|length }})
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link fw-semibold" data-bs-toggle="tab" data-bs-target="#urls-tab-google" type="button">
+                            <i class="bi bi-google"></i> Google ({{ config_google|length }})
+                        </button>
+                    </li>
+                </ul>
+                <div class="tab-content">
+                <div class="tab-pane fade show active" id="urls-tab-meta">
                 <form action="/guardar_urls_txt" method="POST">
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <span class="small text-muted">Formato: <code>Nombre en Panel | Nombre Búsqueda Bot | URL</code></span>
@@ -561,6 +616,55 @@ HTML_TEMPLATE = """
                             {% endfor %}
                         </tbody>
                     </table>
+                </div>
+                </div>
+
+                <div class="tab-pane fade" id="urls-tab-google">
+                <form action="/guardar_urls_google" method="POST">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="small text-muted">Formato: <code>Nombre en Panel | dominio.com</code></span>
+                        <span class="badge bg-secondary-subtle text-secondary">{{ config_google|length }} dominios detectados</span>
+                    </div>
+
+                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-2 bg-dark text-light border-secondary" rows="8" placeholder="Nombre en Panel | galac.com">{{ raw_google_content }}</textarea>
+                    <p class="small text-muted mb-3">Usa el mismo "Nombre en Panel" que en la pestaña Meta para que los anuncios de ambas fuentes se agrupen en la misma empresa. Se buscan los anuncios mostrados en Venezuela en el Centro de Transparencia de Anuncios de Google.</p>
+
+                    <div class="d-flex justify-content-between align-items-center">
+                        <small class="text-secondary"><i class="bi bi-github"></i> Se sincronizará con el archivo <code>urls_google.txt</code> de tu repositorio.</small>
+                        <button type="submit" class="btn btn-sm btn-primary px-3"><i class="bi bi-cloud-arrow-up"></i> Guardar en GitHub</button>
+                    </div>
+                </form>
+
+                <h6 class="fw-bold mt-4 mb-2 small text-uppercase text-muted">Vista Previa de Configuración</h6>
+                <div class="table-responsive" style="max-height: 200px; overflow-y: auto;">
+                    <table class="table table-sm table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr class="small text-muted">
+                                <th>#</th>
+                                <th>Nombre en Panel</th>
+                                <th>Dominio</th>
+                                <th>Centro de Transparencia</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for g in config_google %}
+                            <tr>
+                                <td class="text-muted small">{{ loop.index }}</td>
+                                <td class="fw-bold text-primary">{{ g.nombre_flask }}</td>
+                                <td class="fw-semibold text-secondary">{{ g.dominio }}</td>
+                                <td class="small">
+                                    <a href="https://adstransparency.google.com/?region=VE&domain={{ g.dominio|urlencode }}" target="_blank" class="text-decoration-none text-info">Ver en Google <i class="bi bi-box-arrow-up-right"></i></a>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="4" class="text-center py-3 text-muted small">No hay dominios configurados en urls_google.txt.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                </div>
                 </div>
             </div>
         </div>
@@ -745,11 +849,21 @@ HTML_TEMPLATE = """
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-share"></i> Plataforma</label>
                 <select name="plataforma" class="form-select form-select-sm">
                     <option value="">Todas</option>
-                    <option value="facebook" {% if request.args.get('plataforma') == 'facebook' %}selected{% endif %}>Facebook</option>
-                    <option value="instagram" {% if request.args.get('plataforma') == 'instagram' %}selected{% endif %}>Instagram</option>
-                    <option value="threads" {% if request.args.get('plataforma') == 'threads' %}selected{% endif %}>Threads</option>
-                    <option value="messenger" {% if request.args.get('plataforma') == 'messenger' %}selected{% endif %}>Messenger</option>
-                    <option value="audience" {% if request.args.get('plataforma') == 'audience' %}selected{% endif %}>Audience Net.</option>
+                    <optgroup label="Meta">
+                        <option value="facebook" {% if request.args.get('plataforma') == 'facebook' %}selected{% endif %}>Facebook</option>
+                        <option value="instagram" {% if request.args.get('plataforma') == 'instagram' %}selected{% endif %}>Instagram</option>
+                        <option value="threads" {% if request.args.get('plataforma') == 'threads' %}selected{% endif %}>Threads</option>
+                        <option value="messenger" {% if request.args.get('plataforma') == 'messenger' %}selected{% endif %}>Messenger</option>
+                        <option value="audience" {% if request.args.get('plataforma') == 'audience' %}selected{% endif %}>Audience Net.</option>
+                    </optgroup>
+                    <optgroup label="Google">
+                        <option value="búsqueda de google" {% if request.args.get('plataforma') == 'búsqueda de google' %}selected{% endif %}>Búsqueda</option>
+                        <option value="youtube" {% if request.args.get('plataforma') == 'youtube' %}selected{% endif %}>YouTube</option>
+                        <option value="red de display" {% if request.args.get('plataforma') == 'red de display' %}selected{% endif %}>Red de Display</option>
+                        <option value="google maps" {% if request.args.get('plataforma') == 'google maps' %}selected{% endif %}>Maps</option>
+                        <option value="google play" {% if request.args.get('plataforma') == 'google play' %}selected{% endif %}>Play</option>
+                        <option value="google shopping" {% if request.args.get('plataforma') == 'google shopping' %}selected{% endif %}>Shopping</option>
+                    </optgroup>
                 </select>
             </div>
 
@@ -760,6 +874,16 @@ HTML_TEMPLATE = """
                     <option value="">Todos</option>
                     <option value="video" {% if request.args.get('formato') == 'video' %}selected{% endif %}>Video</option>
                     <option value="imagen" {% if request.args.get('formato') == 'imagen' %}selected{% endif %}>Imagen</option>
+                    <option value="texto" {% if request.args.get('formato') == 'texto' %}selected{% endif %}>Texto</option>
+                </select>
+            </div>
+
+            <div class="col-6 col-md-3 col-lg-1">
+                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-diagram-3"></i> Fuente</label>
+                <select name="fuente" class="form-select form-select-sm">
+                    <option value="">Todas</option>
+                    <option value="Meta" {% if request.args.get('fuente') == 'Meta' %}selected{% endif %}>Meta</option>
+                    <option value="Google" {% if request.args.get('fuente') == 'Google' %}selected{% endif %}>Google</option>
                 </select>
             </div>
 
@@ -983,7 +1107,7 @@ HTML_TEMPLATE = """
                                             {% endif %}
                                         </span>
                                     {% else %}
-                                        <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
+                                        {% if 'texto' in (ad.formato|string|lower) %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
                                     {% endif %}
                                 </td>
                                 <td class="small text-muted" style="max-width: 280px;">
@@ -1002,7 +1126,7 @@ HTML_TEMPLATE = """
                                 <td>
                                     {% if ad.link_individual %}
                                     <a href="{{ ad.link_individual }}" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem;">
-                                        <i class="bi bi-box-arrow-up-right"></i> Ver en Meta
+                                        <i class="bi bi-box-arrow-up-right"></i> Ver anuncio
                                     </a>
                                     {% else %}
                                     <span class="text-muted small">-</span>
@@ -1061,7 +1185,7 @@ HTML_TEMPLATE = """
                                             {% endif %}
                                         </span>
                                     {% else %}
-                                        <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
+                                        {% if 'texto' in (ad.formato|string|lower) %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
                                     {% endif %}
                                 </td>
                                 <td class="small text-muted" style="max-width: 300px;">
@@ -1129,7 +1253,7 @@ HTML_TEMPLATE = """
                                             {% endif %}
                                         </span>
                                     {% else %}
-                                        <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
+                                        {% if 'texto' in (ad.formato|string|lower) %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
                                     {% endif %}
                                 </td>
                                 <td class="small text-muted" style="max-width: 300px;">
@@ -1142,7 +1266,7 @@ HTML_TEMPLATE = """
                                 <td>
                                     {% if ad.link_individual %}
                                     <a href="{{ ad.link_individual }}" target="_blank" class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size: 0.75rem;">
-                                        <i class="bi bi-box-arrow-up-right"></i> Ver en Meta
+                                        <i class="bi bi-box-arrow-up-right"></i> Ver anuncio
                                     </a>
                                     {% endif %}
                                 </td>
@@ -1203,7 +1327,7 @@ HTML_TEMPLATE = """
                                             {% endif %}
                                         </span>
                                     {% else %}
-                                        <span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>
+                                        {% if 'texto' in (ad.formato|string|lower) %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
                                     {% endif %}
                                 </td>
                                 <td class="small text-muted" style="max-width: 300px;">
@@ -1590,9 +1714,12 @@ def index():
     plataforma = request.args.get('plataforma', '').strip()
     tiempo = request.args.get('tiempo', 'todo').strip()
     duracion = request.args.get('duracion', 'todas').strip()
+    fuente = request.args.get('fuente', '').strip()
 
     raw_urls_content, _ = get_github_urls_file()
     config_urls = parse_urls_txt(raw_urls_content)
+    raw_google_content, _ = get_github_urls_file(URLS_GOOGLE_FILE_PATH)
+    config_google = parse_urls_google(raw_google_content)
 
     conn = get_db_connection()
     anuncios = []
@@ -1666,12 +1793,17 @@ def index():
                 if estado:
                     query += " AND estado = %s"
                     params.append(estado)
-                if formato:
+                if formato == 'imagen':
+                    query += " AND (formato ILIKE '%%imagen%%' OR formato ILIKE '%%foto%%')"
+                elif formato:
                     query += " AND formato ILIKE %s"
                     params.append(f"%{formato}%")
                 if plataforma:
                     query += " AND plataformas ILIKE %s"
                     params.append(f"%{plataforma}%")
+                if fuente:
+                    query += " AND COALESCE(fuente, 'Meta') = %s"
+                    params.append(fuente)
 
                 if duracion == 'corta':
                     query += " AND duracion_segundos > 0 AND duracion_segundos < 15"
@@ -1793,6 +1925,8 @@ def index():
         companias_bloqueadas=companias_bloqueadas,
         config_urls=config_urls,
         raw_urls_content=raw_urls_content,
+        config_google=config_google,
+        raw_google_content=raw_google_content,
         companias_sel=companias_sel,
         total_anuncios=total_anuncios,
         total_companias=total_companias,
@@ -1819,6 +1953,15 @@ def guardar_urls_txt():
         return redirect(url_for('index', msg="✅ Archivo urls.txt guardado en GitHub exitosamente."))
     else:
         return redirect(url_for('index', msg=f"❌ {message}"))
+
+@app.route('/guardar_urls_google', methods=['POST'])
+@login_required
+def guardar_urls_google():
+    raw_urls = request.form.get('raw_urls', '').strip()
+    success, message = update_github_urls_file(raw_urls, URLS_GOOGLE_FILE_PATH)
+    if success:
+        return redirect(url_for('index', msg="✅ Archivo urls_google.txt guardado en GitHub exitosamente."))
+    return redirect(url_for('index', msg=f"❌ {message}"))
 
 @app.route('/bloquear_compania', methods=['POST'])
 @login_required
@@ -1862,24 +2005,28 @@ def lanzar_scraper():
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return redirect(url_for('index', msg="❌ Falta configurar GITHUB_TOKEN o GITHUB_REPO en Render."))
 
-    url_api = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{WORKFLOW_FILE}/dispatches"
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
-    payload = {
-        "ref": "main",
-        "inputs": {"dias": str(dias)}
-    }
+    workflows = [
+        ("Meta", WORKFLOW_FILE, {"ref": "main", "inputs": {"dias": str(dias)}}),
+        ("Google", WORKFLOW_GOOGLE_FILE, {"ref": "main"}),
+    ]
 
-    try:
-        response = requests.post(url_api, json=payload, headers=headers, timeout=10)
-        if response.status_code == 204:
-            return redirect(url_for('index', msg="🚀 Los datos se actualizarán en breve."))
-        else:
-            return redirect(url_for('index', msg=f"⚠️ Error en la solicitud (Código {response.status_code}): {response.text}"))
-    except Exception as e:
-        return redirect(url_for('index', msg=f"❌ Error al conectar: {e}"))
+    errores = []
+    for nombre, archivo, payload in workflows:
+        url_api = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{archivo}/dispatches"
+        try:
+            response = requests.post(url_api, json=payload, headers=headers, timeout=10)
+            if response.status_code != 204:
+                errores.append(f"{nombre} (código {response.status_code}): {response.text}")
+        except Exception as e:
+            errores.append(f"{nombre}: {e}")
+
+    if not errores:
+        return redirect(url_for('index', msg="🚀 Scrapers de Meta y Google lanzados. Los datos se actualizarán en breve."))
+    return redirect(url_for('index', msg="⚠️ Error al lanzar: " + " | ".join(errores)))
 
 @app.route('/descargar_excel')
 @login_required
@@ -1897,6 +2044,7 @@ def descargar_excel():
         plataforma = request.args.get('plataforma', '').strip()
         tiempo = request.args.get('tiempo', 'todo').strip()
         duracion = request.args.get('duracion', 'todas').strip()
+        fuente = request.args.get('fuente', '').strip()
 
         with conn.cursor() as cur:
             cur.execute("SELECT compania FROM companias_bloqueadas")
@@ -1919,12 +2067,17 @@ def descargar_excel():
         if estado:
             query += " AND estado = %s"
             params.append(estado)
-        if formato:
+        if formato == 'imagen':
+            query += " AND (formato ILIKE '%%imagen%%' OR formato ILIKE '%%foto%%')"
+        elif formato:
             query += " AND formato ILIKE %s"
             params.append(f"%{formato}%")
         if plataforma:
             query += " AND plataformas ILIKE %s"
             params.append(f"%{plataforma}%")
+        if fuente:
+            query += " AND COALESCE(fuente, 'Meta') = %s"
+            params.append(fuente)
 
         if duracion == 'corta':
             query += " AND duracion_segundos > 0 AND duracion_segundos < 15"
