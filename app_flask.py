@@ -1,5 +1,6 @@
 import os
 import io
+import hmac
 import base64
 import re
 import requests
@@ -23,6 +24,19 @@ if not FLASK_SECRET_KEY or not DASHBOARD_PASSWORD:
         "Faltan variables de entorno obligatorias: FLASK_SECRET_KEY y/o DASHBOARD_PASSWORD."
     )
 app.secret_key = FLASK_SECRET_KEY
+
+# Las claves de Product Owner y Administrador son opcionales: si no están configuradas
+# ese usuario no puede entrar, en vez de tumbar la app.
+USUARIOS = {
+    'mercadeo': {'nombre': 'Mercadeo', 'password': DASHBOARD_PASSWORD},
+    'product_owner': {'nombre': 'Product Owner', 'password': os.environ.get("DASHBOARD_PASSWORD_PO")},
+    'administrador': {'nombre': 'Administrador', 'password': os.environ.get("DASHBOARD_PASSWORD_ADMIN")},
+    'funciones_beta': {'nombre': 'Funciones Beta', 'password': os.environ.get("DASHBOARD_PASSWORD_BETA")},
+}
+USUARIO_ADMIN = 'administrador'
+# Las funciones nuevas se muestran primero solo a este usuario (con {% if es_beta %} en las
+# plantillas); al liberarlas para todos se quita esa condición.
+USUARIO_BETA = 'funciones_beta'
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -63,6 +77,29 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+def usuario_actual():
+    # Las sesiones abiertas antes de existir los usuarios eran de la clave de Mercadeo.
+    return session.get('usuario', 'mercadeo')
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login', next=request.url))
+        if usuario_actual() != USUARIO_ADMIN:
+            return redirect(url_for('index', msg="⛔ Solo el Administrador puede ver esa sección."))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.context_processor
+def inyectar_usuario():
+    clave = usuario_actual()
+    return {
+        'usuario_nombre': USUARIOS.get(clave, {}).get('nombre', clave),
+        'es_admin': clave == USUARIO_ADMIN,
+        'es_beta': clave == USUARIO_BETA,
+    }
+
 def get_db_connection():
     if not DATABASE_URL:
         return None
@@ -82,15 +119,15 @@ def obtener_ip_cliente():
         return forwarded.split(',')[0].strip()
     return request.remote_addr or 'desconocida'
 
-def registrar_acceso():
+def registrar_acceso(usuario):
     conn = get_db_connection()
     if not conn:
         return
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO accesos_dashboard (ip_address, user_agent) VALUES (%s, %s)",
-                (obtener_ip_cliente(), request.headers.get('User-Agent', ''))
+                "INSERT INTO accesos_dashboard (usuario, ip_address, user_agent) VALUES (%s, %s, %s)",
+                (usuario, obtener_ip_cliente(), request.headers.get('User-Agent', ''))
             )
             conn.commit()
     except Exception as e:
@@ -135,6 +172,7 @@ def init_config_tables():
                         user_agent TEXT
                     );
                 """)
+                cur.execute("ALTER TABLE accesos_dashboard ADD COLUMN IF NOT EXISTS usuario VARCHAR(50);")
                 conn.commit()
         except Exception as e:
             print(f"Error inicializando tablas: {e}")
@@ -391,6 +429,14 @@ LOGIN_TEMPLATE = """
 
     <form method="POST" action="/login">
         <div class="mb-3">
+            <label class="form-label small fw-semibold text-secondary">Usuario</label>
+            <select name="usuario" class="form-select bg-dark text-light border-secondary">
+                {% for clave, u in usuarios.items() %}
+                <option value="{{ clave }}" {% if clave == usuario_sel %}selected{% endif %}>{{ u.nombre }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="mb-3">
             <label class="form-label small fw-semibold text-secondary">Contraseña de Acceso</label>
             <input type="password" name="password" class="form-control bg-dark text-light border-secondary" placeholder="Ingresa la clave..." required autofocus>
         </div>
@@ -493,6 +539,7 @@ HTML_TEMPLATE = """
         <a class="navbar-brand d-flex align-items-center gap-2" href="/">
             <i class="bi bi-graph-up-arrow text-primary fs-4"></i>
             <span class="fw-bold tracking-tight">Gálac Ads Intelligence</span>
+            {% if es_beta %}<span class="badge bg-warning text-dark" title="Estás viendo funciones que aún no están disponibles para los demás usuarios">BETA</span>{% endif %}
         </a>
         <div class="d-flex align-items-center gap-2 ms-auto">
             
@@ -533,6 +580,15 @@ HTML_TEMPLATE = """
                     <i class="bi bi-gear-fill fs-5"></i>
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end shadow-sm">
+                    <li><h6 class="dropdown-header"><i class="bi bi-person-circle me-1"></i> Sesión: {{ usuario_nombre }}</h6></li>
+                    {% if es_admin %}
+                    <li>
+                        <a class="dropdown-item d-flex align-items-center gap-2" href="/accesos">
+                            <i class="bi bi-clock-history"></i> Historial de Accesos
+                        </a>
+                    </li>
+                    {% endif %}
+                    <li><hr class="dropdown-divider"></li>
                     <li><h6 class="dropdown-header">Apariencia</h6></li>
                     <li>
                         <button class="dropdown-item d-flex align-items-center justify-content-between" onclick="toggleTheme()">
@@ -1685,22 +1741,139 @@ HTML_TEMPLATE = """
 </html>
 """
 
+ACCESOS_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Historial de Accesos | Gálac Ads Intelligence</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .card-custom { background-color: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+    </style>
+</head>
+<body>
+<div class="container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <div>
+            <h4 class="fw-bold mb-1"><i class="bi bi-clock-history text-primary"></i> Historial de Accesos</h4>
+            <p class="text-secondary small mb-0">Inicios de sesión exitosos al dashboard (hora de Venezuela). Se muestran los últimos {{ limite }}.</p>
+        </div>
+        <a href="/" class="btn btn-sm btn-outline-light"><i class="bi bi-arrow-left"></i> Volver al dashboard</a>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-danger border-0">{{ error }}</div>
+    {% endif %}
+
+    <div class="row g-3 mb-4">
+        {% for r in resumen %}
+        <div class="col-md-4">
+            <div class="card-custom p-3 h-100">
+                <div class="small text-secondary text-uppercase fw-semibold">{{ r.nombre }}</div>
+                <div class="fs-3 fw-bold">{{ r.total }} <span class="fs-6 text-secondary fw-normal">accesos</span></div>
+                <div class="small text-secondary">Último: {{ r.ultimo or 'nunca' }}</div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="card-custom overflow-hidden">
+        <div class="table-responsive">
+            <table class="table table-dark table-hover align-middle mb-0">
+                <thead>
+                    <tr class="small text-secondary">
+                        <th>Fecha y hora</th>
+                        <th>Usuario</th>
+                        <th>IP</th>
+                        <th>Navegador / dispositivo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in accesos %}
+                    <tr>
+                        <td class="text-nowrap">{{ a.fecha_local }}</td>
+                        <td class="fw-semibold">{{ a.nombre_usuario }}</td>
+                        <td class="font-monospace small">{{ a.ip_address or '-' }}</td>
+                        <td class="small text-secondary text-truncate" style="max-width: 420px;" title="{{ a.user_agent }}">{{ a.user_agent or '-' }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="4" class="text-center py-5 text-secondary">Todavía no hay accesos registrados.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+</body>
+</html>
+"""
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     error = None
+    usuario_sel = 'mercadeo'
     if request.method == 'POST':
-        if request.form.get('password') == DASHBOARD_PASSWORD:
+        usuario_sel = request.form.get('usuario', 'mercadeo')
+        datos = USUARIOS.get(usuario_sel)
+        password = request.form.get('password', '')
+        if not datos or not datos['password']:
+            error = "Ese usuario todavía no tiene contraseña configurada."
+        elif hmac.compare_digest(password.encode('utf-8'), datos['password'].encode('utf-8')):
             session['logged_in'] = True
-            registrar_acceso()
+            session['usuario'] = usuario_sel
+            registrar_acceso(usuario_sel)
             return redirect(url_for('index'))
         else:
             error = "Contraseña incorrecta. Inténtalo de nuevo."
-    return render_template_string(LOGIN_TEMPLATE, error=error)
+    return render_template_string(LOGIN_TEMPLATE, error=error, usuarios=USUARIOS, usuario_sel=usuario_sel)
 
 @app.route('/logout')
 def logout():
     session.pop('logged_in', None)
+    session.pop('usuario', None)
     return redirect(url_for('login'))
+
+@app.route('/accesos')
+@admin_required
+def accesos():
+    limite = 500
+    accesos_lista, resumen, error = [], [], None
+    conn = get_db_connection()
+    if not conn:
+        error = "No se pudo conectar a la base de datos."
+    else:
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT usuario, ip_address, user_agent,
+                           to_char(fecha_acceso AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas', 'YYYY-MM-DD HH24:MI') AS fecha_local
+                    FROM accesos_dashboard
+                    ORDER BY fecha_acceso DESC
+                    LIMIT %s
+                """, (limite,))
+                accesos_lista = cur.fetchall()
+                cur.execute("""
+                    SELECT usuario, COUNT(*) AS total,
+                           to_char(MAX(fecha_acceso) AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas', 'YYYY-MM-DD HH24:MI') AS ultimo
+                    FROM accesos_dashboard
+                    GROUP BY usuario
+                """)
+                por_usuario = {r['usuario']: r for r in cur.fetchall()}
+        except Exception as e:
+            error = f"Error consultando accesos: {e}"
+            por_usuario = {}
+        finally:
+            conn.close()
+        for a in accesos_lista:
+            a['nombre_usuario'] = USUARIOS.get(a['usuario'], {}).get('nombre', 'Anterior a usuarios')
+        for clave, u in USUARIOS.items():
+            r = por_usuario.get(clave, {})
+            resumen.append({'nombre': u['nombre'], 'total': r.get('total', 0), 'ultimo': r.get('ultimo')})
+    return render_template_string(ACCESOS_TEMPLATE, accesos=accesos_lista, resumen=resumen, error=error, limite=limite)
 
 @app.route('/')
 @login_required
