@@ -325,6 +325,8 @@ def render_plataformas_badges(val):
         badges.append('<span class="badge text-light" style="background: linear-gradient(45deg, #f09433, #dc2743, #bc1888); font-size: 0.68rem;"><i class="bi bi-instagram"></i> Instagram</span>')
     if 'threads' in s or 'hilos' in s:
         badges.append('<span class="badge bg-dark text-light border border-secondary" style="font-size: 0.68rem;"><i class="bi bi-threads"></i> Threads</span>')
+    if 'whatsapp' in s:
+        badges.append('<span class="badge text-light" style="background-color: #25d366; font-size: 0.68rem;"><i class="bi bi-whatsapp"></i> WhatsApp</span>')
     if 'messenger' in s:
         badges.append('<span class="badge bg-info text-dark" style="font-size: 0.68rem;"><i class="bi bi-messenger"></i> Messenger</span>')
     if 'audience' in s or 'network' in s:
@@ -636,11 +638,15 @@ HTML_TEMPLATE = """
                         <span class="badge bg-secondary-subtle text-secondary">{{ config_urls|length }} enlaces detectados</span>
                     </div>
                     
-                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-3 bg-dark text-light border-secondary" rows="10" placeholder="Nombre en Panel | Nombre en Meta | https://www.facebook.com/ads/library/?...">{{ raw_urls_content }}</textarea>
+                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-3 bg-dark text-light border-secondary" rows="10" placeholder="Nombre en Panel | Nombre en Meta | https://www.facebook.com/ads/library/?..." {% if not es_admin %}readonly{% endif %}>{{ raw_urls_content }}</textarea>
                     
                     <div class="d-flex justify-content-between align-items-center">
                         <small class="text-secondary"><i class="bi bi-github"></i> Se sincronizará directamente con el archivo <code>urls.txt</code> de tu repositorio.</small>
+                        {% if es_admin %}
                         <button type="submit" class="btn btn-sm btn-primary px-3"><i class="bi bi-cloud-arrow-up"></i> Guardar en GitHub</button>
+                        {% else %}
+                        <span class="small text-warning"><i class="bi bi-lock-fill"></i> Solo el Administrador puede modificar las URLs</span>
+                        {% endif %}
                     </div>
                 </form>
 
@@ -682,12 +688,16 @@ HTML_TEMPLATE = """
                         <span class="badge bg-secondary-subtle text-secondary">{{ config_google|length }} dominios detectados</span>
                     </div>
 
-                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-2 bg-dark text-light border-secondary" rows="8" placeholder="Nombre en Panel | galac.com">{{ raw_google_content }}</textarea>
+                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-2 bg-dark text-light border-secondary" rows="8" placeholder="Nombre en Panel | galac.com" {% if not es_admin %}readonly{% endif %}>{{ raw_google_content }}</textarea>
                     <p class="small text-muted mb-3">Usa el mismo "Nombre en Panel" que en la pestaña Meta para que los anuncios de ambas fuentes se agrupen en la misma empresa. Se buscan los anuncios mostrados en Venezuela en el Centro de Transparencia de Anuncios de Google.</p>
 
                     <div class="d-flex justify-content-between align-items-center">
                         <small class="text-secondary"><i class="bi bi-github"></i> Se sincronizará con el archivo <code>urls_google.txt</code> de tu repositorio.</small>
+                        {% if es_admin %}
                         <button type="submit" class="btn btn-sm btn-primary px-3"><i class="bi bi-cloud-arrow-up"></i> Guardar en GitHub</button>
+                        {% else %}
+                        <span class="small text-warning"><i class="bi bi-lock-fill"></i> Solo el Administrador puede modificar las URLs</span>
+                        {% endif %}
                     </div>
                 </form>
 
@@ -911,6 +921,7 @@ HTML_TEMPLATE = """
                         <option value="threads" {% if request.args.get('plataforma') == 'threads' %}selected{% endif %}>Threads</option>
                         <option value="messenger" {% if request.args.get('plataforma') == 'messenger' %}selected{% endif %}>Messenger</option>
                         <option value="audience" {% if request.args.get('plataforma') == 'audience' %}selected{% endif %}>Audience Net.</option>
+                        <option value="whatsapp" {% if request.args.get('plataforma') == 'whatsapp' %}selected{% endif %}>WhatsApp</option>
                     </optgroup>
                     <optgroup label="Google">
                         <option value="búsqueda de google" {% if request.args.get('plataforma') == 'búsqueda de google' %}selected{% endif %}>Búsqueda</option>
@@ -931,6 +942,8 @@ HTML_TEMPLATE = """
                     <option value="video" {% if request.args.get('formato') == 'video' %}selected{% endif %}>Video</option>
                     <option value="imagen" {% if request.args.get('formato') == 'imagen' %}selected{% endif %}>Imagen</option>
                     <option value="texto" {% if request.args.get('formato') == 'texto' %}selected{% endif %}>Texto</option>
+                    <option value="carrusel" {% if request.args.get('formato') == 'carrusel' %}selected{% endif %}>Carrusel</option>
+                    <option value="dinámico" {% if request.args.get('formato') == 'dinámico' %}selected{% endif %}>Dinámico</option>
                 </select>
             </div>
 
@@ -1029,15 +1042,19 @@ HTML_TEMPLATE = """
                             <canvas id="formatChart"></canvas>
                         </div>
                         <div class="row text-center mt-3 pt-2 border-top g-1 small">
-                            <div class="col-4">
+                            <div class="col-3">
                                 <span class="text-danger fw-bold d-block">{{ format_data.pct_videos }}%</span>
                                 <span class="text-muted" style="font-size:0.75rem;">Videos ({{ format_data.videos }})</span>
                             </div>
-                            <div class="col-4">
+                            <div class="col-3">
                                 <span class="text-warning fw-bold d-block">{{ format_data.pct_imagenes }}%</span>
                                 <span class="text-muted" style="font-size:0.75rem;">Imágenes ({{ format_data.imagenes }})</span>
                             </div>
-                            <div class="col-4">
+                            <div class="col-3">
+                                <span class="text-info fw-bold d-block">{{ format_data.pct_textos }}%</span>
+                                <span class="text-muted" style="font-size:0.75rem;">Textos ({{ format_data.textos }})</span>
+                            </div>
+                            <div class="col-3">
                                 <span class="text-secondary fw-bold d-block">{{ format_data.pct_otros }}%</span>
                                 <span class="text-muted" style="font-size:0.75rem;">Otros ({{ format_data.otros }})</span>
                             </div>
@@ -1063,6 +1080,7 @@ HTML_TEMPLATE = """
                                 <th>Compañía / Marca</th>
                                 <th class="text-center">Total Videos</th>
                                 <th class="text-center">Total Fotos</th>
+                                <th class="text-center">Total Textos</th>
                                 <th class="text-center">Total Anuncios</th>
                                 <th class="text-end">Acciones</th>
                             </tr>
@@ -1085,6 +1103,11 @@ HTML_TEMPLATE = """
                                     </span>
                                 </td>
                                 <td class="text-center">
+                                    <span class="badge bg-info-subtle text-info-emphasis fw-bold fs-6 px-3 py-1">
+                                        <i class="bi bi-fonts me-1"></i> {{ emp.total_textos }}
+                                    </span>
+                                </td>
+                                <td class="text-center">
                                     <span class="badge bg-secondary-subtle text-secondary fw-bold fs-6 px-3 py-1">
                                         {{ emp.total_anuncios }}
                                     </span>
@@ -1097,7 +1120,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="6" class="text-center py-5 text-muted">
+                                <td colspan="7" class="text-center py-5 text-muted">
                                     <i class="bi bi-folder-x fs-2 d-block mb-2"></i> No hay estadísticas de empresas disponibles.
                                 </td>
                             </tr>
@@ -1163,7 +1186,7 @@ HTML_TEMPLATE = """
                                             {% endif %}
                                         </span>
                                     {% else %}
-                                        {% if 'texto' in (ad.formato|string|lower) %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
+                                        {% set f = ad.formato|string|lower %}{% if 'texto' in f %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% elif 'carrusel' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-images"></i> Carrusel</span>{% elif 'dinámico' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-shuffle"></i> Dinámico</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
                                     {% endif %}
                                 </td>
                                 <td class="small text-muted" style="max-width: 280px;">
@@ -1241,7 +1264,7 @@ HTML_TEMPLATE = """
                                             {% endif %}
                                         </span>
                                     {% else %}
-                                        {% if 'texto' in (ad.formato|string|lower) %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
+                                        {% set f = ad.formato|string|lower %}{% if 'texto' in f %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% elif 'carrusel' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-images"></i> Carrusel</span>{% elif 'dinámico' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-shuffle"></i> Dinámico</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
                                     {% endif %}
                                 </td>
                                 <td class="small text-muted" style="max-width: 300px;">
@@ -1309,7 +1332,7 @@ HTML_TEMPLATE = """
                                             {% endif %}
                                         </span>
                                     {% else %}
-                                        {% if 'texto' in (ad.formato|string|lower) %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
+                                        {% set f = ad.formato|string|lower %}{% if 'texto' in f %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% elif 'carrusel' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-images"></i> Carrusel</span>{% elif 'dinámico' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-shuffle"></i> Dinámico</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
                                     {% endif %}
                                 </td>
                                 <td class="small text-muted" style="max-width: 300px;">
@@ -1383,7 +1406,7 @@ HTML_TEMPLATE = """
                                             {% endif %}
                                         </span>
                                     {% else %}
-                                        {% if 'texto' in (ad.formato|string|lower) %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
+                                        {% set f = ad.formato|string|lower %}{% if 'texto' in f %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% elif 'carrusel' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-images"></i> Carrusel</span>{% elif 'dinámico' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-shuffle"></i> Dinámico</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
                                     {% endif %}
                                 </td>
                                 <td class="small text-muted" style="max-width: 300px;">
@@ -1680,18 +1703,19 @@ HTML_TEMPLATE = """
     filterTimeline(0, null);
 
     if (document.getElementById('formatChart')) {
-        const totalFmt = formatData.videos + formatData.imagenes + formatData.otros;
+        const totalFmt = formatData.videos + formatData.imagenes + formatData.textos + formatData.otros;
         new Chart(document.getElementById('formatChart'), {
             type: 'doughnut',
             data: {
                 labels: [
                     `Videos (${formatData.pct_videos}%)`,
                     `Imágenes (${formatData.pct_imagenes}%)`,
+                    `Textos (${formatData.pct_textos}%)`,
                     `Otros (${formatData.pct_otros}%)`
                 ],
                 datasets: [{
-                    data: [formatData.videos, formatData.imagenes, formatData.otros],
-                    backgroundColor: ['#ef4444', '#f59e0b', '#64748b'],
+                    data: [formatData.videos, formatData.imagenes, formatData.textos, formatData.otros],
+                    backgroundColor: ['#ef4444', '#f59e0b', '#0ea5e9', '#64748b'],
                     borderWidth: 2
                 }]
             },
@@ -1921,32 +1945,23 @@ def index():
                     """)
                 lista_companias = [r['compania'] for r in cur.fetchall()]
 
-                # Conteo agrupado por empresa (videos, fotos y total)
-                if companias_bloqueadas:
-                    cur.execute("""
-                        SELECT 
-                            compania,
-                            COUNT(*) AS total_anuncios,
-                            SUM(CASE WHEN LOWER(formato) LIKE '%video%' OR duracion_segundos > 0 THEN 1 ELSE 0 END) AS total_videos,
-                            SUM(CASE WHEN LOWER(formato) NOT LIKE '%video%' AND (duracion_segundos IS NULL OR duracion_segundos = 0) THEN 1 ELSE 0 END) AS total_fotos
-                        FROM anuncios
-                        WHERE compania IS NOT NULL AND compania != ''
-                        AND compania != ALL(%s)
-                        GROUP BY compania
-                        ORDER BY total_videos DESC, total_anuncios DESC;
-                    """, (companias_bloqueadas,))
-                else:
-                    cur.execute("""
-                        SELECT 
-                            compania,
-                            COUNT(*) AS total_anuncios,
-                            SUM(CASE WHEN LOWER(formato) LIKE '%video%' OR duracion_segundos > 0 THEN 1 ELSE 0 END) AS total_videos,
-                            SUM(CASE WHEN LOWER(formato) NOT LIKE '%video%' AND (duracion_segundos IS NULL OR duracion_segundos = 0) THEN 1 ELSE 0 END) AS total_fotos
-                        FROM anuncios
-                        WHERE compania IS NOT NULL AND compania != ''
-                        GROUP BY compania
-                        ORDER BY total_videos DESC, total_anuncios DESC;
-                    """)
+                # Conteo agrupado por empresa. Los '%%' son necesarios porque la consulta
+                # siempre se ejecuta con parámetros (psycopg2 leería '%v' como marcador).
+                es_video = "(LOWER(formato) LIKE '%%video%%' OR COALESCE(duracion_segundos, 0) > 0)"
+                filtro_bloqueadas = "AND compania != ALL(%s)" if companias_bloqueadas else ""
+                cur.execute(f"""
+                    SELECT
+                        compania,
+                        COUNT(*) AS total_anuncios,
+                        SUM(CASE WHEN {es_video} THEN 1 ELSE 0 END) AS total_videos,
+                        SUM(CASE WHEN NOT {es_video} AND (LOWER(formato) LIKE '%%foto%%' OR LOWER(formato) LIKE '%%imagen%%') THEN 1 ELSE 0 END) AS total_fotos,
+                        SUM(CASE WHEN NOT {es_video} AND LOWER(formato) LIKE '%%texto%%' THEN 1 ELSE 0 END) AS total_textos
+                    FROM anuncios
+                    WHERE compania IS NOT NULL AND compania != ''
+                    {filtro_bloqueadas}
+                    GROUP BY compania
+                    ORDER BY total_anuncios DESC;
+                """, (companias_bloqueadas,) if companias_bloqueadas else ())
                 stats_empresas = cur.fetchall()
 
                 query = "SELECT * FROM anuncios WHERE 1=1"
@@ -2038,15 +2053,18 @@ def index():
     total_anuncios = len(anuncios)
     companias_set = {a['compania'] for a in anuncios if a.get('compania')}
     total_companias = len(companias_set)
-    total_videos = sum(1 for a in anuncios if 'video' in str(a.get('formato', '')).lower())
-    total_fotos = sum(1 for a in anuncios if 'imagen' in str(a.get('formato', '')).lower() or 'foto' in str(a.get('formato', '')).lower())
-    total_otros = max(0, total_anuncios - (total_videos + total_fotos))
+    formatos = [str(a.get('formato') or '').lower() for a in anuncios]
+    total_videos = sum(1 for f in formatos if 'video' in f)
+    total_fotos = sum(1 for f in formatos if 'imagen' in f or 'foto' in f)
+    total_textos = sum(1 for f in formatos if 'texto' in f)
+    total_otros = max(0, total_anuncios - (total_videos + total_fotos + total_textos))
     total_nuevos = len(anuncios_nuevos)
     total_winning = len(anuncios_winning)
     total_retirados = len(anuncios_retirados)
 
     pct_videos = round((total_videos / total_anuncios * 100), 1) if total_anuncios > 0 else 0
     pct_imagenes = round((total_fotos / total_anuncios * 100), 1) if total_anuncios > 0 else 0
+    pct_textos = round((total_textos / total_anuncios * 100), 1) if total_anuncios > 0 else 0
     pct_otros = round((total_otros / total_anuncios * 100), 1) if total_anuncios > 0 else 0
 
     palabras_empresas = set()
@@ -2058,6 +2076,9 @@ def index():
 
     palabras_encontradas = []
     for a in anuncios:
+        # Los anuncios de Google no traen el copy real, solo un título generado por el bot.
+        if a.get('fuente') == 'Google':
+            continue
         texto_completo = f"{a.get('texto') or ''} {a.get('titulo') or ''}".lower()
         palabras = re.findall(r'[a-záéíóúñ]{4,}', texto_completo)
         palabras_limpias = [
@@ -2074,7 +2095,8 @@ def index():
         "values": [p[1] for p in top_palabras]
     }
 
-    top_companias = list(companias_set)[:7]
+    conteo_companias = Counter(a['compania'] for a in anuncios if a.get('compania'))
+    top_companias = [c for c, _ in conteo_companias.most_common(7)]
     timeline_data_historico = construir_timeline(anuncios, top_companias)
     anuncios_actuales_meta = [a for a in anuncios if a.get('presente_en_meta')]
     timeline_data_actual = construir_timeline(anuncios_actuales_meta, top_companias)
@@ -2082,9 +2104,11 @@ def index():
     format_data = {
         "videos": total_videos,
         "imagenes": total_fotos,
+        "textos": total_textos,
         "otros": total_otros,
         "pct_videos": pct_videos,
         "pct_imagenes": pct_imagenes,
+        "pct_textos": pct_textos,
         "pct_otros": pct_otros
     }
 
@@ -2118,7 +2142,7 @@ def index():
     )
 
 @app.route('/guardar_urls_txt', methods=['POST'])
-@login_required
+@admin_required
 def guardar_urls_txt():
     raw_urls = request.form.get('raw_urls', '').strip()
     success, message = update_github_urls_file(raw_urls)
@@ -2128,7 +2152,7 @@ def guardar_urls_txt():
         return redirect(url_for('index', msg=f"❌ {message}"))
 
 @app.route('/guardar_urls_google', methods=['POST'])
-@login_required
+@admin_required
 def guardar_urls_google():
     raw_urls = request.form.get('raw_urls', '').strip()
     success, message = update_github_urls_file(raw_urls, URLS_GOOGLE_FILE_PATH)
