@@ -13,16 +13,17 @@ on:
 
 jobs:
   scrape:
-    runs-on: ubuntu-latest
+    # Fijado a 24.04: ubuntu-latest pasa a Ubuntu 26 el 19-oct-2026 y Python 3.10 llega a fin de vida.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Descargar código del repositorio
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configurar Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          python-version: '3.10'
+          python-version: '3.13'
 
       - name: Instalar dependencias
         run: |

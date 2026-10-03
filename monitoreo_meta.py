@@ -4,7 +4,7 @@ import time
 import json
 import re
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import psycopg2
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
@@ -37,6 +37,53 @@ MESES_MAP = {
     'nov': 11, 'noviembre': 11, 'november': 11,
     'dic': 12, 'diciembre': 12, 'dec': 12, 'december': 12
 }
+
+PLATAFORMAS_META = {
+    'FACEBOOK': 'Facebook',
+    'INSTAGRAM': 'Instagram',
+    'AUDIENCE_NETWORK': 'Audience Network',
+    'MESSENGER': 'Messenger',
+    'THREADS': 'Threads',
+    'WHATSAPP': 'WhatsApp',
+}
+FORMATOS_META = {
+    'VIDEO': 'Video',
+    'IMAGE': 'Foto',
+    'CAROUSEL': 'Carrusel',
+    'DCO': 'Dinámico',
+}
+
+def recolectar_oficiales(obj, destino):
+    # Meta incluye los datos oficiales de cada anuncio (plataformas, estado, fechas, formato,
+    # texto) en el JSON de la página y de las respuestas GraphQL al hacer scroll.
+    if isinstance(obj, dict):
+        if 'ad_archive_id' in obj and 'publisher_platform' in obj:
+            destino[str(obj['ad_archive_id'])] = obj
+        for v in obj.values():
+            recolectar_oficiales(v, destino)
+    elif isinstance(obj, list):
+        for v in obj:
+            recolectar_oficiales(v, destino)
+
+def oficiales_desde_html(html):
+    destino = {}
+    for bloque in re.findall(r'<script type="application/json"[^>]*>(.*?)</script>', html, re.S):
+        try:
+            recolectar_oficiales(json.loads(bloque), destino)
+        except Exception:
+            pass
+    return destino
+
+def texto_oficial(oficial):
+    # Los anuncios dinámicos traen una plantilla ({{product.brand}}) en body y el texto real en cards.
+    snap = oficial.get('snapshot') or {}
+    candidatos = [(snap.get('body') or {}).get('text')]
+    candidatos += [c.get('body') for c in (snap.get('cards') or [])]
+    candidatos.append(snap.get('title'))
+    for t in candidatos:
+        if isinstance(t, str) and t.strip() and '{{' not in t:
+            return re.sub(r'\s+', ' ', t).strip()
+    return None
 
 def actualizar_progreso(activo=True, actual=0, total=0, empresa="", porcentaje=0, finalizado=False):
     datos = {
@@ -150,6 +197,9 @@ def limpiar_texto_copy(texto, empresa):
         r'(?i)\b\d+\s+anuncios?\s+usan\s+este\s+contenido\s+y\s+texto\b',
         r'(?i)\beste\s+anuncio\s+tiene\s+varias\s+versiones\b',
         r'(?i)\bthis\s+ad\s+has\s+multiple\s+versions\b',
+        r'(?i)\b\d+\s+ads?\s+uses?\s+this\s+creative\s+and\s+text\b',
+        r'(?i)\bsee\s+summary\s+details\b',
+        r'\b\d{1,2}:\d{2}\s*/\s*\d{1,2}:\d{2}\b',
         r'(?i)\bidentificador\s+de\s+la\s+biblioteca(?:\s+[uú]nico)?:\s*\d+\b',
         r'(?i)\ben\s+circulaci[oó]n\s+desde\s+(?:el\s+)?[^\n·•]+',
         r'(?i)\bstarted\s+running\s+on\s+[^\n·•]+',
@@ -185,23 +235,16 @@ def guardar_anuncio(anuncio, bloqueadas):
                 compania = EXCLUDED.compania,
                 fecha_subida = COALESCE(NULLIF(EXCLUDED.fecha_subida, ''), NULLIF(anuncios.fecha_subida, '')),
                 estado = EXCLUDED.estado,
-                plataformas = CASE 
-                    WHEN EXCLUDED.plataformas IS NOT NULL AND EXCLUDED.plataformas != '' AND EXCLUDED.plataformas != 'Facebook' 
-                    THEN EXCLUDED.plataformas 
-                    ELSE COALESCE(NULLIF(anuncios.plataformas, ''), EXCLUDED.plataformas)
-                END,
-                formato = CASE 
-                    WHEN EXCLUDED.formato = 'Video' THEN 'Video' 
-                    ELSE COALESCE(NULLIF(anuncios.formato, ''), EXCLUDED.formato)
-                END,
+                plataformas = COALESCE(NULLIF(EXCLUDED.plataformas, ''), anuncios.plataformas),
+                formato = COALESCE(NULLIF(EXCLUDED.formato, ''), anuncios.formato),
                 duracion_segundos = CASE 
                     WHEN EXCLUDED.duracion_segundos > 0 THEN EXCLUDED.duracion_segundos 
                     ELSE COALESCE(anuncios.duracion_segundos, 0)
                 END,
                 titulo = CASE
-                    WHEN LENGTH(EXCLUDED.titulo) > LENGTH(COALESCE(anuncios.titulo, ''))
-                    THEN EXCLUDED.titulo
-                    ELSE COALESCE(NULLIF(anuncios.titulo, ''), EXCLUDED.titulo)
+                    WHEN COALESCE(EXCLUDED.titulo, '') = '' OR EXCLUDED.titulo LIKE 'Anuncio de %%'
+                    THEN COALESCE(NULLIF(anuncios.titulo, ''), EXCLUDED.titulo)
+                    ELSE EXCLUDED.titulo
                 END,
                 presente_en_meta = TRUE
             RETURNING id;
@@ -303,32 +346,11 @@ def extraer_duracion_json_profundo(obj):
                 return d
     return 0
 
-def extraer_fecha_json_profundo(obj):
-    if isinstance(obj, dict):
-        for clave in ['start_date', 'start_time', 'startDate', 'creation_time', 'ad_delivery_start_time']:
-            if clave in obj and obj[clave]:
-                try:
-                    val = int(obj[clave])
-                    if val > 1000000000:
-                        return datetime.utcfromtimestamp(val).strftime('%Y-%m-%d')
-                except Exception:
-                    pass
-        for v in obj.values():
-            f = extraer_fecha_json_profundo(v)
-            if f:
-                return f
-    elif isinstance(obj, list):
-        for item in obj:
-            f = extraer_fecha_json_profundo(item)
-            if f:
-                return f
-    return None
-
 def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fecha_desde=None):
     print(f"\n🌐 Abriendo: {url_final}")
     print(f"🎯 Monitoreando: '{nombre_flask}' (Búsqueda bot: '{nombre_bot}')")
 
-    fechas_api = {}
+    oficiales = {}
     duraciones_api = {}
 
     def interceptar_red(response):
@@ -344,25 +366,15 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
                         continue
                     try:
                         data = json.loads(linea)
-                        def buscar_ids(o):
-                            if isinstance(o, dict):
-                                ad_id = o.get("ad_archive_id") or o.get("archive_id") or o.get("adArchiveID")
-                                if ad_id:
-                                    f = extraer_fecha_json_profundo(o)
-                                    if f:
-                                        fechas_api[str(ad_id)] = f
-                                    dur = extraer_duracion_json_profundo(o)
-                                    if dur > 0:
-                                        duraciones_api[str(ad_id)] = dur
-
-                                for v in o.values():
-                                    buscar_ids(v)
-                            elif isinstance(o, list):
-                                for i in o:
-                                    buscar_ids(i)
-                        buscar_ids(data)
                     except Exception:
-                        pass
+                        continue
+                    nuevos = {}
+                    recolectar_oficiales(data, nuevos)
+                    oficiales.update(nuevos)
+                    for ad_id, obj in nuevos.items():
+                        dur = extraer_duracion_json_profundo(obj)
+                        if dur > 0:
+                            duraciones_api[ad_id] = dur
             except Exception:
                 pass
 
@@ -436,47 +448,8 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
                 estadoAnuncio = "Activo";
             }
 
-            // 2. DETECCIÓN PRECISA DE TODAS LAS PLATAFORMAS
-            // Meta no expone el nombre de la red en aria-label ni en SVGs: cada icono es un
-            // <div> con mask-image (sprite) + mask-position. Coordenadas verificadas a mano
-            // contra el sprite real de Meta (sept. 2026) comparando docenas de anuncios.
-            const plataformas = new Set();
-
-            const platformSpan = Array.from(card.querySelectorAll('span')).find(s => {
-                const t = (s.innerText || '').trim().toLowerCase();
-                return t === 'platforms' || t === 'plataformas';
-            });
-
-            if (platformSpan && platformSpan.parentElement) {
-                const iconos = Array.from(platformSpan.parentElement.querySelectorAll('.xtwfq29'));
-                iconos.forEach(ico => {
-                    const style = ico.getAttribute('style') || '';
-                    const m = style.match(/mask-position:\s*(-?\d+)px\s+(-?\d+)px/);
-                    if (!m) return;
-                    const x = parseInt(m[1], 10);
-                    const y = parseInt(m[2], 10);
-                    if (x === 0 && y === -955) plataformas.add('Facebook');
-                    else if (x === 0 && y === -1007) plataformas.add('Instagram');
-                    else if (x === -388 && y === -732) plataformas.add('Audience Network');
-                    else if (x === -387 && y === -753) plataformas.add('Messenger');
-                    else if (x === -387 && y === -766) plataformas.add('Threads');
-                });
-            }
-
-            // Fallback de cabecera (por si Meta cambia el sprite): busca menciones literales
-            if (plataformas.size === 0) {
-                const headerHtml = card.innerHTML.substring(0, 3000).toLowerCase();
-                if (headerHtml.includes('facebook')) plataformas.add('Facebook');
-                if (headerHtml.includes('instagram')) plataformas.add('Instagram');
-                if (headerHtml.includes('messenger')) plataformas.add('Messenger');
-                if (headerHtml.includes('audience network') || headerHtml.includes('audience_network')) plataformas.add('Audience Network');
-                if (headerHtml.includes('threads')) plataformas.add('Threads');
-            }
-
-            let plataformasFinal = Array.from(plataformas).join(', ');
-            if (!plataformasFinal) {
-                plataformasFinal = "Facebook";
-            }
+            // 2. Las plataformas salen de los datos oficiales (publisher_platform), no de los
+            // iconos: Meta muestra un solo icono aunque el anuncio corra en varias redes.
 
             // 3. FECHA DE PUBLICACIÓN
             let fechaTexto = "";
@@ -539,6 +512,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
                 const low = txt.toLowerCase();
                 if (
                     txt.length > 15 &&
+                    !/^\d{1,2}:\d{2}\s*\/\s*\d{1,2}:\d{2}$/.test(txt) &&
                     !low.includes('identificador') && !low.includes('library id') &&
                     !low.includes('en circulación') && !low.includes('started running') &&
                     !low.includes('plataformas') && !low.includes('platform') &&
@@ -572,7 +546,6 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
                 empresa: empresa,
                 estado: estadoAnuncio,
                 fechaTexto: fechaTexto,
-                plataformas: plataformasFinal,
                 esVideo: hasVideo,
                 duracion: duracionSegundos,
                 copy: rawCopy || `Anuncio de ${nombreBuscado}`
@@ -582,8 +555,11 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
         return resultados;
     }""", nombre_bot)
 
+    oficiales.update(oficiales_desde_html(page.content()))
+
     vistos = set()
     guardados = 0
+    sin_datos_oficiales = 0
     links_encontrados = []
 
     for item in datos_anuncios:
@@ -592,7 +568,11 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
             continue
         vistos.add(ad_id)
 
-        empresa_actual = item["empresa"].strip()
+        oficial = oficiales.get(ad_id)
+        if not oficial:
+            sin_datos_oficiales += 1
+
+        empresa_actual = ((oficial or {}).get("page_name") or item["empresa"]).strip()
         busq_limpia = re.sub(r'[^\w\s]', '', nombre_bot.lower()).strip()
         actual_limpia = re.sub(r'[^\w\s]', '', empresa_actual.lower()).strip()
 
@@ -603,21 +583,32 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
         if nombre_flask.lower() in bloqueadas or empresa_actual.lower() in bloqueadas:
             continue
 
-        fecha_final = normalizar_fecha_texto(item.get("fechaTexto"))
-        if not fecha_final:
-            fecha_final = fechas_api.get(ad_id)
-        if not fecha_final:
-            fecha_final = datetime.today().strftime('%Y-%m-%d')
-
         duracion_final = item["duracion"]
         if duracion_final == 0:
             duracion_final = duraciones_api.get(ad_id, 0)
 
-        formato = "Video" if (item["esVideo"] or duracion_final > 0) else "Foto"
-        icono = "🎬 VIDEO" if formato == "Video" else "🖼️ FOTO"
-        dur_txt = f"{duracion_final}s" if duracion_final > 0 else "-"
+        if oficial:
+            estado = "Activo" if oficial.get("is_active") else "Inactivo"
+            inicio = oficial.get("start_date")
+            fecha_final = (datetime.fromtimestamp(int(inicio), tz=timezone.utc).strftime('%Y-%m-%d')
+                           if inicio else normalizar_fecha_texto(item.get("fechaTexto")))
+            plataformas = ", ".join(PLATAFORMAS_META.get(p, p.replace('_', ' ').title())
+                                    for p in (oficial.get("publisher_platform") or []))
+            fmt = (oficial.get("snapshot") or {}).get("display_format") or ""
+            formato = FORMATOS_META.get(fmt, fmt.title())
+            titulo_definitivo = texto_oficial(oficial) or limpiar_texto_copy(item["copy"], nombre_flask)
+        else:
+            estado = item["estado"]
+            fecha_final = normalizar_fecha_texto(item.get("fechaTexto"))
+            plataformas = ""
+            formato = "Video" if (item["esVideo"] or duracion_final > 0) else "Foto"
+            titulo_definitivo = limpiar_texto_copy(item["copy"], nombre_flask)
 
-        titulo_definitivo = limpiar_texto_copy(item["copy"], nombre_flask)
+        if not fecha_final:
+            fecha_final = datetime.today().strftime('%Y-%m-%d')
+        if formato != "Video":
+            duracion_final = 0
+        dur_txt = f"{duracion_final}s" if duracion_final > 0 else "-"
 
         link_individual = f"https://www.facebook.com/ads/library/?id={ad_id}"
         links_encontrados.append(link_individual)
@@ -626,8 +617,8 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
             "id_anuncio": ad_id,
             "compania": nombre_flask,
             "fecha_subida": fecha_final,
-            "estado": item["estado"],
-            "plataformas": item["plataformas"],
+            "estado": estado,
+            "plataformas": plataformas,
             "formato": formato,
             "duracion_segundos": duracion_final,
             "titulo": titulo_definitivo[:400],
@@ -636,10 +627,12 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
 
         if guardar_anuncio(anuncio_data, bloqueadas):
             guardados += 1
-            badge_estado = "🟢 Activo" if item["estado"] == "Activo" else "⚪ Inactivo"
-            print(f"  ✨ [{icono}] [{badge_estado}] {nombre_flask} | Plat: {item['plataformas']} | Dur: {dur_txt} | Fecha: {fecha_final} | Titulo: {titulo_definitivo[:40]}...")
+            badge_estado = "🟢 Activo" if estado == "Activo" else "⚪ Inactivo"
+            print(f"  ✨ [{formato}] [{badge_estado}] {nombre_flask} | Plat: {plataformas or '?'} | Dur: {dur_txt} | Fecha: {fecha_final} | Titulo: {titulo_definitivo[:40]}...")
 
     print(f"✅ Anuncios registrados para {nombre_flask}: {guardados}")
+    if sin_datos_oficiales:
+        print(f"  ⚠️ {sin_datos_oficiales} anuncios sin datos oficiales de Meta: se usaron los datos visibles de la página (plataformas desconocidas).")
 
     if datos_anuncios and nombre_flask.lower() not in bloqueadas:
         marcar_no_detectados(nombre_flask, links_encontrados, fecha_desde)
@@ -686,19 +679,21 @@ def main():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             viewport={"width": 1440, "height": 900}
         )
-        page = context.new_page()
-
         fecha_desde = (datetime.today() - timedelta(days=dias)).strftime('%Y-%m-%d') if dias else None
 
         for indice, (nombre_flask, nombre_bot, url_base) in enumerate(entradas, 1):
             pct = int(((indice - 1) / total_empresas) * 100)
             actualizar_progreso(activo=True, actual=indice, total=total_empresas, empresa=nombre_flask, porcentaje=pct, finalizado=False)
-            
+
             url_final = preparar_url_completa(url_base, dias)
+            # Una página por empresa: así no se acumulan los listeners de red entre empresas.
+            page = context.new_page()
             try:
                 extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fecha_desde)
             except Exception as e:
                 print(f"❌ Error en {nombre_flask}: {e}")
+            finally:
+                page.close()
 
         browser.close()
         actualizar_progreso(activo=False, actual=total_empresas, total=total_empresas, empresa="Completado", porcentaje=100, finalizado=True)
