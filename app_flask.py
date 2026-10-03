@@ -634,7 +634,7 @@ HTML_TEMPLATE = """
                 <div class="tab-pane fade show active" id="urls-tab-meta">
                 <form action="/guardar_urls_txt" method="POST">
                     <div class="d-flex justify-content-between align-items-center mb-2">
-                        <span class="small text-muted">Formato: <code>Nombre en Panel | Nombre Búsqueda Bot | URL</code></span>
+                        <span class="small text-muted">Formato: <code>Nombre en Panel | Nombre Búsqueda Bot | URL</code><br>Recomendado: URL de la página del anunciante (con <code>view_all_page_id</code>), así los anuncios retirados se detectan con precisión.</span>
                         <span class="badge bg-secondary-subtle text-secondary">{{ config_urls|length }} enlaces detectados</span>
                     </div>
                     

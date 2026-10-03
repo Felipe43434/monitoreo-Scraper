@@ -303,13 +303,38 @@ def marcar_no_detectados(compania, links_encontrados, fecha_desde=None):
     except Exception as e:
         print(f"  ⚠️ Error actualizando anuncios retirados de Meta: {e}")
 
+def marcar_retirados_meta(compania, links_vigentes):
+    # En Venezuela Meta solo muestra anuncios activos: si una búsqueda por página trajo la
+    # lista completa, todo anuncio guardado que ya no aparece fue apagado.
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE anuncios
+            SET presente_en_meta = FALSE, estado = 'Inactivo'
+            WHERE compania = %s AND COALESCE(fuente, 'Meta') = 'Meta'
+              AND link_individual != ALL(%s)
+              AND (presente_en_meta IS DISTINCT FROM FALSE OR estado IS DISTINCT FROM 'Inactivo');
+        """, (compania, list(links_vigentes)))
+        print(f"  🗂️ {compania}: {cur.rowcount} anuncios marcados como retirados de Meta.")
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"  ⚠️ Error marcando anuncios retirados de Meta: {e}")
+
+def es_busqueda_por_pagina(url):
+    return 'view_all_page_id=' in url
+
 def preparar_url_completa(url_base, dias_atras=30):
     parsed = urllib.parse.urlparse(url_base)
     params = urllib.parse.parse_qs(parsed.query)
     params['active_status'] = ['all']
     params['ad_type'] = ['all']
 
-    if dias_atras:
+    # Las búsquedas por página traen todos los anuncios activos del anunciante; la ventana de
+    # días solo hace falta en las búsquedas por palabra clave, que mezclan anunciantes ajenos.
+    if dias_atras and not es_busqueda_por_pagina(url_base):
         fecha_hasta = datetime.today().strftime('%Y-%m-%d')
         fecha_desde = (datetime.today() - timedelta(days=dias_atras)).strftime('%Y-%m-%d')
         params['start_date[min]'] = [fecha_desde]
@@ -350,8 +375,10 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
     print(f"\n🌐 Abriendo: {url_final}")
     print(f"🎯 Monitoreando: '{nombre_flask}' (Búsqueda bot: '{nombre_bot}')")
 
+    por_pagina = es_busqueda_por_pagina(url_final)
     oficiales = {}
     duraciones_api = {}
+    limitado = {"rate_limit": False}
 
     def interceptar_red(response):
         if any(w in response.url for w in ["graphql", "api", "ad_library"]):
@@ -359,6 +386,8 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
                 texto = response.text()
                 if texto.startswith("for (;;);"):
                     texto = texto[len("for (;;);"):]
+                if "Rate limit exceeded" in texto:
+                    limitado["rate_limit"] = True
 
                 for linea in texto.splitlines():
                     linea = linea.strip()
@@ -395,8 +424,8 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
     intentos_sin_cambio = 0
 
     for _ in range(25):
-        page.mouse.wheel(0, 3500)
-        time.sleep(1.2)
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        time.sleep(1.5)
         
         current_ads = page.locator("text=/Identificador de la biblioteca|Library ID|ID:/i").count()
         if current_ads > prev_ads_count:
@@ -557,6 +586,14 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
 
     oficiales.update(oficiales_desde_html(page.content()))
 
+    # Las variantes agrupadas ("2 ads use this creative") se muestran en una sola tarjeta pero
+    # son anuncios activos distintos: se procesan desde los datos oficiales.
+    ids_dom = {str(i["id"]) for i in datos_anuncios}
+    for ad_id, oficial in oficiales.items():
+        if ad_id not in ids_dom:
+            datos_anuncios.append({"id": ad_id, "empresa": oficial.get("page_name") or nombre_bot, "estado": "",
+                                   "fechaTexto": "", "esVideo": False, "duracion": 0, "copy": ""})
+
     vistos = set()
     guardados = 0
     sin_datos_oficiales = 0
@@ -577,7 +614,9 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
         actual_limpia = re.sub(r'[^\w\s]', '', empresa_actual.lower()).strip()
 
         es_valida = (busq_limpia in actual_limpia) or (actual_limpia in busq_limpia) or len(actual_limpia) == 0 or len(busq_limpia) == 0
-        if not es_valida:
+        # En una búsqueda por página todos los anuncios son de ese anunciante, aunque el
+        # nombre de la página no coincida con el nombre en el panel.
+        if not por_pagina and not es_valida:
             continue
 
         if nombre_flask.lower() in bloqueadas or empresa_actual.lower() in bloqueadas:
@@ -634,8 +673,31 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
     if sin_datos_oficiales:
         print(f"  ⚠️ {sin_datos_oficiales} anuncios sin datos oficiales de Meta: se usaron los datos visibles de la página (plataformas desconocidas).")
 
+    if por_pagina:
+        return {"links": links_encontrados, "completo": busqueda_completa(page, len(oficiales), limitado["rate_limit"])}
+
     if datos_anuncios and nombre_flask.lower() not in bloqueadas:
         marcar_no_detectados(nombre_flask, links_encontrados, fecha_desde)
+    return None
+
+def busqueda_completa(page, cargados, rate_limit):
+    # Solo se confía en la búsqueda si Meta no cortó la paginación y lo cargado coincide con
+    # su contador aproximado ("~N results"); si no, retirar anuncios sería un falso positivo.
+    if rate_limit:
+        print("  ⚠️ Meta limitó las solicitudes (rate limit): la lista quedó incompleta, no se marcan retiros.")
+        return False
+    cuerpo = page.inner_text("body")
+    if re.search(r"No ads match|No hay anuncios que coincidan", cuerpo, re.I):
+        return True
+    m = re.search(r"~?\s*([\d.,]+)\s+(?:results?|resultados?)", cuerpo)
+    if not m:
+        print("  ⚠️ No se encontró el contador de resultados de Meta: no se marcan retiros.")
+        return False
+    total = int(re.sub(r"[.,]", "", m.group(1)))
+    if cargados < int(total * 0.9):
+        print(f"  ⚠️ Se cargaron {cargados} de ~{total} anuncios: lista incompleta, no se marcan retiros.")
+        return False
+    return True
 
 def main():
     inicializar_bd()
@@ -680,20 +742,38 @@ def main():
             viewport={"width": 1440, "height": 900}
         )
         fecha_desde = (datetime.today() - timedelta(days=dias)).strftime('%Y-%m-%d') if dias else None
+        # Por empresa: links vistos en sus búsquedas por página y si todas salieron completas.
+        por_empresa = {}
 
         for indice, (nombre_flask, nombre_bot, url_base) in enumerate(entradas, 1):
             pct = int(((indice - 1) / total_empresas) * 100)
             actualizar_progreso(activo=True, actual=indice, total=total_empresas, empresa=nombre_flask, porcentaje=pct, finalizado=False)
 
             url_final = preparar_url_completa(url_base, dias)
+            if es_busqueda_por_pagina(url_final):
+                por_empresa.setdefault(nombre_flask, {"links": set(), "completo": True})
             # Una página por empresa: así no se acumulan los listeners de red entre empresas.
             page = context.new_page()
             try:
-                extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fecha_desde)
+                resultado = extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fecha_desde)
+                if resultado is not None:
+                    por_empresa[nombre_flask]["links"].update(resultado["links"])
+                    por_empresa[nombre_flask]["completo"] &= resultado["completo"]
             except Exception as e:
                 print(f"❌ Error en {nombre_flask}: {e}")
+                if nombre_flask in por_empresa:
+                    por_empresa[nombre_flask]["completo"] = False
             finally:
                 page.close()
+
+        print("\n🗂️ Actualizando anuncios retirados de Meta...")
+        for nombre_flask, datos in por_empresa.items():
+            if nombre_flask.lower() in bloqueadas:
+                continue
+            if datos["completo"]:
+                marcar_retirados_meta(nombre_flask, datos["links"])
+            else:
+                print(f"  ⏭️ {nombre_flask}: búsqueda incompleta, se omite para no marcar retiros por error.")
 
         browser.close()
         actualizar_progreso(activo=False, actual=total_empresas, total=total_empresas, empresa="Completado", porcentaje=100, finalizado=True)
