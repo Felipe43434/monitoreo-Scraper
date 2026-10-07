@@ -3,6 +3,7 @@ import io
 import hmac
 import base64
 import re
+import unicodedata
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -45,6 +46,8 @@ WORKFLOW_FILE = "scraper.yml"
 WORKFLOW_GOOGLE_FILE = "scraper_google.yml"
 URLS_FILE_PATH = "urls.txt"
 URLS_GOOGLE_FILE_PATH = "urls_google.txt"
+PRODUCTOS_FILE_PATH = "productos.txt"
+SIN_CLASIFICAR = "Sin clasificar"
 
 DIAS_WINNING_AD = 30
 
@@ -227,6 +230,48 @@ def update_github_urls_file(new_content, path=URLS_FILE_PATH):
             return False, f"GitHub respondió con error {r.status_code}: {r.text}"
     except Exception as e:
         return False, f"Error conectando con GitHub: {e}"
+
+def leer_config(path):
+    # Se lee desde GitHub para reflejar al instante lo que guarda el admin; sin token
+    # (por ejemplo en local) se usa la copia del repositorio.
+    contenido, _ = get_github_urls_file(path)
+    if not contenido and os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            contenido = f.read()
+    return contenido
+
+def normalizar(texto):
+    return unicodedata.normalize('NFKD', texto or '').encode('ascii', 'ignore').decode('ascii').lower()
+
+def parse_productos(raw_text):
+    reglas = []
+    for line in (raw_text or "").splitlines():
+        line_clean = line.strip()
+        if not line_clean or line_clean.startswith('#') or '|' not in line_clean:
+            continue
+        nombre, claves = [p.strip() for p in line_clean.split('|', 1)]
+        patrones = []
+        for clave in claves.split(','):
+            clave = normalizar(clave.strip())
+            if not clave:
+                continue
+            prefijo = clave.endswith('*')
+            patrones.append(r'\b' + re.escape(clave.rstrip('*')) + ('' if prefijo else r'\b'))
+        if nombre and patrones:
+            reglas.append((nombre, re.compile('|'.join(patrones))))
+    return reglas
+
+def clasificar_productos(ad, reglas):
+    # Los anuncios de Google y los títulos genéricos ("Anuncio de <empresa>") no traen texto
+    # real: clasificarlos por el nombre de la empresa daría falsos positivos.
+    titulo = ad.get('titulo') or ''
+    if ad.get('fuente') == 'Google' or titulo.startswith('Anuncio de '):
+        titulo = ''
+    texto = normalizar(f"{ad.get('texto') or ''} {titulo}")
+    return [nombre for nombre, patron in reglas if patron.search(texto)]
+
+def coincide_producto(productos, producto):
+    return not productos if producto == SIN_CLASIFICAR else producto in productos
 
 def parse_urls_google(raw_text):
     items = []
@@ -532,9 +577,147 @@ HTML_TEMPLATE = """
             overflow: hidden;
             background-color: rgba(255, 255, 255, 0.15);
         }
+
+        /* ===== Diseño v2: solo para Funciones Beta (clase en <body>) ===== */
+        .diseno-v2 {
+            --radius: 14px;
+            --ease-out: cubic-bezier(.22, 1, .36, 1);
+            --shadow-sm: 0 1px 2px rgba(15, 23, 42, .05), 0 2px 6px rgba(15, 23, 42, .06);
+            --shadow-md: 0 14px 30px -12px rgba(15, 23, 42, .25);
+            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-image:
+                radial-gradient(1100px 380px at 8% -8%, rgba(59, 130, 246, .09), transparent 60%),
+                radial-gradient(900px 320px at 100% 0%, rgba(99, 102, 241, .07), transparent 60%);
+            background-attachment: fixed;
+        }
+        .diseno-v2 .navbar {
+            background-color: rgba(15, 23, 42, .94) !important;
+            box-shadow: 0 6px 24px rgba(2, 6, 23, .25);
+        }
+        .diseno-v2 .navbar-brand i {
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent !important;
+        }
+        .diseno-v2 .card-custom {
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-sm);
+            transition: translate .35s var(--ease-out), box-shadow .35s var(--ease-out), border-color .35s ease;
+        }
+        .diseno-v2 .card-custom:hover {
+            transform: none;
+            translate: 0 -3px;
+            box-shadow: var(--shadow-md);
+            border-color: rgba(59, 130, 246, .35);
+        }
+        .diseno-v2 .card-filter-container:hover { translate: none; }
+        .diseno-v2 .stat-value {
+            font-size: 2rem;
+            letter-spacing: -.02em;
+            font-variant-numeric: tabular-nums;
+        }
+        .diseno-v2 .stat-label { letter-spacing: .07em; }
+        .diseno-v2 .kpi-row .card-custom i {
+            display: inline-grid;
+            place-items: center;
+            width: 2.3rem;
+            height: 2.3rem;
+            border-radius: 11px;
+            background: color-mix(in srgb, currentColor 13%, transparent);
+            transition: scale .35s var(--ease-out), rotate .35s var(--ease-out);
+        }
+        .diseno-v2 .kpi-row .card-custom:hover i { scale: 1.12; rotate: -6deg; }
+        .diseno-v2 .btn {
+            border-radius: 9px;
+            transition: translate .2s var(--ease-out), box-shadow .2s ease, background-color .2s ease, border-color .2s ease, color .2s ease;
+        }
+        .diseno-v2 .btn:hover { translate: 0 -1px; }
+        .diseno-v2 .btn:active { translate: 0 0; }
+        .diseno-v2 .btn-primary:hover { box-shadow: 0 8px 18px -8px rgba(37, 99, 235, .7); }
+        .diseno-v2 .form-control, .diseno-v2 .form-select {
+            border-radius: 9px;
+            transition: border-color .2s ease, box-shadow .2s ease;
+        }
+        .diseno-v2 .nav-tabs { border-bottom-color: var(--border-color); gap: .15rem; }
+        .diseno-v2 .nav-tabs .nav-link {
+            position: relative;
+            border: 0;
+            background: transparent;
+            border-radius: 10px 10px 0 0;
+            transition: background-color .2s ease, color .2s ease;
+        }
+        .diseno-v2 .nav-tabs .nav-link:hover { background: color-mix(in srgb, currentColor 7%, transparent); }
+        .diseno-v2 .nav-tabs .nav-link::after {
+            content: "";
+            position: absolute;
+            inset: auto 12px 0 12px;
+            height: 3px;
+            border-radius: 3px 3px 0 0;
+            background: currentColor;
+            scale: 0 1;
+            transition: scale .35s var(--ease-out);
+        }
+        .diseno-v2 .nav-tabs .nav-link.active::after { scale: 1 1; }
+        .diseno-v2 .table > :not(caption) > * > * { padding-block: .7rem; }
+        .diseno-v2 .table-hover > tbody > tr > * { transition: background-color .2s ease; }
+        .diseno-v2 .badge { border-radius: 999px; font-weight: 600; }
+        [data-bs-theme="dark"] .diseno-v2 .table-light {
+            --bs-table-bg: #172033;
+            --bs-table-color: var(--text-muted);
+            --bs-table-border-color: var(--border-color);
+        }
+        .diseno-v2 .modal-content { border-radius: 18px; box-shadow: 0 30px 60px -20px rgba(2, 6, 23, .45); }
+
+        @keyframes aparecer {
+            from { opacity: 0; translate: 0 14px; }
+        }
+        @media (prefers-reduced-motion: no-preference) {
+            /* Las animaciones se repiten solas al mostrar una pestaña: el contenido pasa de display:none a visible. */
+            .diseno-v2 .kpi-row > *,
+            .diseno-v2 .card-filter-container,
+            .diseno-v2 .nav-tabs,
+            .diseno-v2 .tab-pane.active .card-custom,
+            .diseno-v2 .alert {
+                animation: aparecer .6s var(--ease-out) backwards;
+            }
+            .diseno-v2 .kpi-row > :nth-child(2) { animation-delay: 60ms; }
+            .diseno-v2 .kpi-row > :nth-child(3) { animation-delay: 120ms; }
+            .diseno-v2 .kpi-row > :nth-child(4) { animation-delay: 180ms; }
+            .diseno-v2 .kpi-row > :nth-child(5) { animation-delay: 240ms; }
+            .diseno-v2 .card-filter-container { animation-delay: 200ms; }
+            .diseno-v2 .nav-tabs { animation-delay: 260ms; }
+            .diseno-v2 .tab-pane.active tbody tr { animation: aparecer .45s var(--ease-out) backwards; }
+            .diseno-v2 .tab-pane.active tbody tr:nth-child(2) { animation-delay: 30ms; }
+            .diseno-v2 .tab-pane.active tbody tr:nth-child(3) { animation-delay: 60ms; }
+            .diseno-v2 .tab-pane.active tbody tr:nth-child(4) { animation-delay: 90ms; }
+            .diseno-v2 .tab-pane.active tbody tr:nth-child(5) { animation-delay: 120ms; }
+            .diseno-v2 .tab-pane.active tbody tr:nth-child(6) { animation-delay: 150ms; }
+            .diseno-v2 .tab-pane.active tbody tr:nth-child(7) { animation-delay: 180ms; }
+            .diseno-v2 .tab-pane.active tbody tr:nth-child(8) { animation-delay: 210ms; }
+            .diseno-v2 .tab-pane.active tbody tr:nth-child(n+9) { animation-delay: 240ms; }
+
+            /* Mejora progresiva: la tabla de empresas aparece al hacer scroll donde el navegador lo soporta. */
+            @supports ((animation-timeline: view()) and (animation-range: entry)) {
+                .diseno-v2 .tab-pane.active .reveal-scroll {
+                    animation: aparecer linear backwards;
+                    animation-timeline: view();
+                    animation-range: entry 0% entry 60%;
+                }
+            }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .diseno-v2 .badge-new { animation: none; }
+            .diseno-v2 .card-custom:hover, .diseno-v2 .btn:hover { translate: none; }
+        }
     </style>
+    {% if es_beta %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    {% endif %}
 </head>
-<body>
+<body class="{% if es_beta %}diseno-v2{% endif %}">
 
 <nav class="navbar navbar-expand-lg navbar-dark px-3 py-2 sticky-top">
     <div class="container-fluid">
@@ -629,6 +812,13 @@ HTML_TEMPLATE = """
                             <i class="bi bi-google"></i> Google ({{ config_google|length }})
                         </button>
                     </li>
+                    {% if es_admin or es_beta %}
+                    <li class="nav-item">
+                        <button class="nav-link fw-semibold" data-bs-toggle="tab" data-bs-target="#urls-tab-productos" type="button">
+                            <i class="bi bi-box-seam"></i> Productos ({{ lista_productos|length - 1 }}) <span class="badge bg-warning text-dark">BETA</span>
+                        </button>
+                    </li>
+                    {% endif %}
                 </ul>
                 <div class="tab-content">
                 <div class="tab-pane fade show active" id="urls-tab-meta">
@@ -680,6 +870,27 @@ HTML_TEMPLATE = """
                     </table>
                 </div>
                 </div>
+
+                {% if es_admin or es_beta %}
+                <div class="tab-pane fade" id="urls-tab-productos">
+                <form action="/guardar_productos" method="POST">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="small text-muted">Formato: <code>Categoría | palabra1, palabra2, prefijo*</code></span>
+                        <span class="badge bg-secondary-subtle text-secondary">{{ lista_productos|length - 1 }} categorías</span>
+                    </div>
+                    <textarea name="raw_productos" class="form-control form-control-sm font-monospace mb-2 bg-dark text-light border-secondary" rows="10" {% if not es_admin %}readonly{% endif %}>{{ raw_productos_content }}</textarea>
+                    <p class="small text-muted mb-3">Cada anuncio se clasifica según las palabras de su texto (sin importar mayúsculas ni tildes); puede tener varias categorías. Con <code>*</code> al final se incluyen variantes: <code>factur*</code> = factura, facturación, facturar. Los anuncios de Google no traen texto, por eso quedan "Sin clasificar".</p>
+                    <div class="d-flex justify-content-between align-items-center">
+                        <small class="text-secondary"><i class="bi bi-github"></i> Se sincronizará con el archivo <code>productos.txt</code> de tu repositorio.</small>
+                        {% if es_admin %}
+                        <button type="submit" class="btn btn-sm btn-primary px-3"><i class="bi bi-cloud-arrow-up"></i> Guardar en GitHub</button>
+                        {% else %}
+                        <span class="small text-warning"><i class="bi bi-lock-fill"></i> Solo el Administrador puede modificar las categorías</span>
+                        {% endif %}
+                    </div>
+                </form>
+                </div>
+                {% endif %}
 
                 <div class="tab-pane fade" id="urls-tab-google">
                 <form action="/guardar_urls_google" method="POST">
@@ -791,7 +1002,7 @@ HTML_TEMPLATE = """
     {% endif %}
 
     <!-- KPIs -->
-    <div class="row g-3 mb-4">
+    <div class="row g-3 mb-4 kpi-row">
         <div class="col-6 col-md-4 col-xl">
             <div class="card-custom p-3 h-100">
                 <div class="d-flex justify-content-between align-items-center">
@@ -893,7 +1104,7 @@ HTML_TEMPLATE = """
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-stopwatch"></i> Duración</label>
                 <select name="duracion" class="form-select form-select-sm">
                     <option value="todas" {% if request.args.get('duracion', 'todas') == 'todas' %}selected{% endif %}>Todas</option>
-                    <option value="corta" {% if request.args.get('duracion', 'corta') == 'corta' %}selected{% endif %}>&lt; 15s</option>
+                    <option value="corta" {% if request.args.get('duracion') == 'corta' %}selected{% endif %}>&lt; 15s</option>
                     <option value="media" {% if request.args.get('duracion') == 'media' %}selected{% endif %}>15s - 60s</option>
                     <option value="larga" {% if request.args.get('duracion') == 'larga' %}selected{% endif %}>&gt; 60s</option>
                     <option value="sin_video" {% if request.args.get('duracion') == 'sin_video' %}selected{% endif %}>Estático</option>
@@ -955,6 +1166,18 @@ HTML_TEMPLATE = """
                     <option value="Google" {% if request.args.get('fuente') == 'Google' %}selected{% endif %}>Google</option>
                 </select>
             </div>
+
+            {% if es_beta %}
+            <div class="col-6 col-md-3 col-lg-2">
+                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-box-seam"></i> Producto <span class="badge bg-warning text-dark">BETA</span></label>
+                <select name="producto" class="form-select form-select-sm">
+                    <option value="">Todos</option>
+                    {% for p in lista_productos %}
+                    <option value="{{ p }}" {% if request.args.get('producto') == p %}selected{% endif %}>{{ p }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
 
             <!-- 8. Botones de Acción -->
             <div class="col-12 col-lg-2 d-flex gap-1">
@@ -1064,7 +1287,7 @@ HTML_TEMPLATE = """
             </div>
 
             <!-- Tabla de Empresas Registradas -->
-            <div class="card-custom overflow-hidden">
+            <div class="card-custom overflow-hidden reveal-scroll">
                 <div class="p-3 bg-primary bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
                     <div>
                         <h6 class="fw-bold text-primary mb-1"><i class="bi bi-buildings"></i> Empresas Monitoreadas y Volumen de Creatividades</h6>
@@ -1191,6 +1414,11 @@ HTML_TEMPLATE = """
                                 </td>
                                 <td class="small text-muted" style="max-width: 280px;">
                                     {{ (ad.texto or ad.titulo or 'Sin descripción')[:120] }}{% if (ad.texto or ad.titulo or '')|length > 120 %}...{% endif %}
+                                    {% if es_beta and ad.productos %}
+                                    <div class="mt-1 d-flex flex-wrap gap-1">
+                                        {% for p in ad.productos %}<span class="badge bg-primary-subtle text-primary-emphasis" style="font-size: 0.65rem;"><i class="bi bi-box-seam"></i> {{ p }}</span>{% endfor %}
+                                    </div>
+                                    {% endif %}
                                 </td>
                                 <td class="small">
                                     {% if ad.fecha_display != 'N/A' %}
@@ -1481,6 +1709,32 @@ HTML_TEMPLATE = """
 </div>
 
 <script>
+    const disenoV2 = document.body.classList.contains('diseno-v2');
+    const reducirMovimiento = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (disenoV2) {
+        Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+        if (reducirMovimiento) {
+            Chart.defaults.animation = false;
+        } else {
+            Chart.defaults.animation.duration = 1100;
+            Chart.defaults.animation.easing = 'easeOutQuart';
+        }
+    }
+
+    function contarHasta(el) {
+        const final = parseInt(el.textContent, 10);
+        if (!final) return;
+        const inicio = performance.now();
+        const duracion = 900;
+        const paso = (ahora) => {
+            const p = Math.min(1, (ahora - inicio) / duracion);
+            el.textContent = Math.round(final * (1 - Math.pow(1 - p, 3)));
+            if (p < 1) requestAnimationFrame(paso);
+        };
+        el.textContent = '0';
+        requestAnimationFrame(paso);
+    }
+
     function toggleAllCompanies(source) {
         document.querySelectorAll('.comp-checkbox').forEach(cb => cb.checked = source.checked);
     }
@@ -1759,6 +2013,10 @@ HTML_TEMPLATE = """
             }
         });
     }
+
+    if (disenoV2 && !reducirMovimiento) {
+        document.querySelectorAll('.kpi-row .stat-value').forEach(contarHasta);
+    }
 </script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
@@ -1917,6 +2175,9 @@ def index():
     config_urls = parse_urls_txt(raw_urls_content)
     raw_google_content, _ = get_github_urls_file(URLS_GOOGLE_FILE_PATH)
     config_google = parse_urls_google(raw_google_content)
+    producto = request.args.get('producto', '').strip()
+    raw_productos_content = leer_config(PRODUCTOS_FILE_PATH)
+    reglas_productos = parse_productos(raw_productos_content)
 
     conn = get_db_connection()
     anuncios = []
@@ -2025,6 +2286,11 @@ def index():
         finally:
             conn.close()
 
+    for a in anuncios:
+        a['productos'] = clasificar_productos(a, reglas_productos)
+    if producto:
+        anuncios = [a for a in anuncios if coincide_producto(a['productos'], producto)]
+
     anuncios_winning = []
     anuncios_nuevos = []
     anuncios_retirados = []
@@ -2124,6 +2390,8 @@ def index():
         raw_urls_content=raw_urls_content,
         config_google=config_google,
         raw_google_content=raw_google_content,
+        lista_productos=[nombre for nombre, _ in reglas_productos] + [SIN_CLASIFICAR],
+        raw_productos_content=raw_productos_content,
         companias_sel=companias_sel,
         total_anuncios=total_anuncios,
         total_companias=total_companias,
@@ -2158,6 +2426,15 @@ def guardar_urls_google():
     success, message = update_github_urls_file(raw_urls, URLS_GOOGLE_FILE_PATH)
     if success:
         return redirect(url_for('index', msg="✅ Archivo urls_google.txt guardado en GitHub exitosamente."))
+    return redirect(url_for('index', msg=f"❌ {message}"))
+
+@app.route('/guardar_productos', methods=['POST'])
+@admin_required
+def guardar_productos():
+    raw = request.form.get('raw_productos', '').strip()
+    success, message = update_github_urls_file(raw, PRODUCTOS_FILE_PATH)
+    if success:
+        return redirect(url_for('index', msg="✅ Categorías de producto guardadas en GitHub."))
     return redirect(url_for('index', msg=f"❌ {message}"))
 
 @app.route('/bloquear_compania', methods=['POST'])
@@ -2302,7 +2579,14 @@ def descargar_excel():
         query += " ORDER BY id DESC"
 
         df = pd.read_sql_query(query, conn, params=params)
-        
+
+        reglas_productos = parse_productos(leer_config(PRODUCTOS_FILE_PATH))
+        productos_por_fila = [clasificar_productos(r, reglas_productos) for r in df.to_dict('records')]
+        df['productos'] = [', '.join(p) for p in productos_por_fila]
+        producto = request.args.get('producto', '').strip()
+        if producto:
+            df = df[[coincide_producto(p, producto) for p in productos_por_fila]]
+
         df['fecha_subida_detectada'] = df.apply(lambda row: extraer_fecha_anuncio(row.to_dict()), axis=1)
         df['dias_activo'] = df['fecha_subida_detectada'].apply(calcular_dias_activo)
         df['es_winning_ad'] = df.apply(lambda r: (r['dias_activo'] >= DIAS_WINNING_AD and str(r.get('estado', '')).strip().lower() == 'activo'), axis=1)

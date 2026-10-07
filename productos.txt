@@ -1,0 +1,12 @@
+# Categoría | palabras clave separadas por coma. Mayúsculas y tildes no importan.
+# Usa * al final para incluir variantes: factur* = factura, facturas, facturación, facturar.
+Sistema Administrativo (ERP) | sistema administrativo, administrativo, erp
+Facturación | factur*, homologad*, maquina fiscal, impresora fiscal, comprobante*, nota de credito
+Contabilidad | contab*, contador*, balance*, estados financieros, ajuste por inflacion, axi
+Nómina | nomina*, lottt, prestaciones sociales, liquidacion*, vacaciones, salario*, recursos humanos, ivss
+Impuestos | iva, islr, seniat, retencion*, sujetos pasivos especiales, spe, igtf, declaracion*, impuesto*, tribut*
+Ventas, Inventario y Punto de Venta | venta, ventas, vender, inventario*, mercancia*, almacen*, punto de venta, pos, stock, cobr*
+Finanzas | finanza*, flujo de caja, ganancia*, gasto*, rentab*
+Cursos y Formación | curso*, taller*, webinar*, capacitacion*, formacion
+Ciberseguridad e IT | ciberseguridad, antivirus, eset, servidor*, malware, ransomware, virus, firewall, backup*
+Inteligencia Artificial | ia, inteligencia artificial, asistente virtual
