@@ -1210,7 +1210,7 @@ HTML_TEMPLATE = """
 
             <!-- 2. Selección Múltiple Compañías -->
             <div class="col-md-3 col-lg-2">
-                <label class="form-label small fw-semibold text-muted mb-1">{% set todas_companias = es_beta and lista_companias and lista_companias|reject('in', companias_sel)|list|length == 0 %}
+                {% set todas_companias = es_beta and lista_companias and lista_companias|reject('in', companias_sel)|list|length == 0 %}
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-building"></i> Compañías ({% if companias_sel and not todas_companias %}{{ companias_sel|length }}{% else %}Todas{% endif %})</label>
                 <div class="dropdown">
                     <button class="form-select form-select-sm text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
@@ -1846,8 +1846,8 @@ HTML_TEMPLATE = """
             <div class="row g-3">
                 <div class="col-lg-7">
                     <div class="card-custom p-3">
-                        <h6 class="fw-bold mb-3"><i class="bi bi-bar-chart"></i> Top Palabras Clave más Usadas</h6>
-                        <div style="height: 360px;">
+                        <h6 class="fw-bold mb-3"><i class="bi bi-bar-chart"></i> Top {% if es_beta %}20 {% endif %}Palabras Clave más Usadas</h6>
+                        <div style="height: {{ 560 if es_beta else 360 }}px;">
                             <canvas id="keywordsChart"></canvas>
                         </div>
                     </div>
@@ -2659,7 +2659,7 @@ def index():
         palabras_encontradas.extend(palabras_limpias)
 
     contador_palabras = Counter(palabras_encontradas)
-    top_palabras = contador_palabras.most_common(12)
+    top_palabras = contador_palabras.most_common(20 if es_beta else 12)
 
     keywords_chart_data = {
         "labels": [p[0].capitalize() for p in top_palabras],
