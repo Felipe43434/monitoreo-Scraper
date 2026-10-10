@@ -924,6 +924,10 @@ HTML_TEMPLATE = """
             box-shadow: var(--shadow-sm);
             transition: translate .35s var(--ease-out), box-shadow .35s var(--ease-out), border-color .35s ease;
         }
+        /* En la ventana de Comparar las tarjetas no se mueven al pasar el mouse: el movimiento (transform)
+           encerraba el desplegable de compañías en su tarjeta y la tabla de abajo lo tapaba. */
+        #modalComparar .card-custom:hover { transform: none; translate: none; }
+        #modalComparar .comparar-selector { position: relative; z-index: 5; }
         .diseno-v2 .modal-content.card-custom:hover { translate: none; box-shadow: var(--shadow-md); border-color: var(--border-color); }
         .diseno-v2 .card-custom:hover {
             transform: none;
@@ -1270,7 +1274,7 @@ HTML_TEMPLATE = """
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
             </div>
             <div class="modal-body">
-            <div class="card-custom p-3 mb-3">
+                <div class="card-custom p-3 mb-3 comparar-selector">
                     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
                         <span class="small fw-semibold">Elige 2 o más compañías</span>
                         <span class="small text-muted">Se usan los filtros del panel (fuente, tiempo, producto, búsqueda…).</span>
