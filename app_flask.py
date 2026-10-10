@@ -280,10 +280,10 @@ def parse_productos(raw_text):
     return reglas
 
 def clasificar_productos(ad, reglas):
-    # Los anuncios de Google y los títulos genéricos ("Anuncio de <empresa>") no traen texto
-    # real: clasificarlos por el nombre de la empresa daría falsos positivos.
+    # Los títulos genéricos ("Anuncio de <empresa>", también los de Google sin título de YouTube)
+    # no traen texto real: clasificarlos por el nombre de la empresa daría falsos positivos.
     titulo = ad.get('titulo') or ''
-    if ad.get('fuente') == 'Google' or titulo.startswith('Anuncio de '):
+    if titulo.startswith('Anuncio de '):
         titulo = ''
     texto = normalizar(f"{ad.get('texto') or ''} {titulo}")
     return [nombre for nombre, patron in reglas if patron.search(texto)]
@@ -1538,7 +1538,7 @@ HTML_TEMPLATE = """
                                         {% endif %}
                                     </div>
                                 </td>
-                                <td>{{ ad.plataformas_html|safe }}</td>
+                                <td{% if es_beta %} style="width: 150px; max-width: 150px;"{% endif %}>{% if es_beta %}<div class="d-flex flex-wrap gap-1">{{ ad.plataformas_html|safe }}</div>{% else %}{{ ad.plataformas_html|safe }}{% endif %}</td>
                                 <td>
                                     {% if 'video' in (ad.formato|string|lower) %}
                                         <span class="text-danger small fw-semibold">
@@ -1551,8 +1551,9 @@ HTML_TEMPLATE = """
                                         {% set f = ad.formato|string|lower %}{% if 'texto' in f %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% elif 'carrusel' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-images"></i> Carrusel</span>{% elif 'dinámico' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-shuffle"></i> Dinámico</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
                                     {% endif %}
                                 </td>
-                                <td class="small text-muted" style="max-width: 280px;">
-                                    {{ (ad.texto or ad.titulo or 'Sin descripción')[:120] }}{% if (ad.texto or ad.titulo or '')|length > 120 %}...{% endif %}
+                                {% set largo_texto = 220 if es_beta else 120 %}
+                                <td class="small text-muted" style="{% if es_beta %}min-width: 320px; max-width: 440px;{% else %}max-width: 280px;{% endif %}">
+                                    {{ (ad.texto or ad.titulo or 'Sin descripción')[:largo_texto] }}{% if (ad.texto or ad.titulo or '')|length > largo_texto %}...{% endif %}
                                     {% if es_beta and ad.productos %}
                                     <div class="mt-1 d-flex flex-wrap gap-1">
                                         {% for p in ad.productos %}{% if p in productos_sel %}<span class="badge bg-primary text-white shadow-sm" style="font-size: 0.65rem;" title="Producto filtrado"><i class="bi bi-check-circle-fill"></i> {{ p }}</span>{% else %}<span class="badge bg-primary-subtle text-primary-emphasis{% if productos_sel %} opacity-50{% endif %}" style="font-size: 0.65rem;"><i class="bi bi-box-seam"></i> {{ p }}</span>{% endif %}{% endfor %}
@@ -2590,8 +2591,8 @@ def index():
 
     palabras_encontradas = []
     for a in anuncios:
-        # Los anuncios de Google no traen el copy real, solo un título generado por el bot.
-        if a.get('fuente') == 'Google':
+        # Los anuncios de Google sin título de YouTube solo traen un título generado por el bot.
+        if a.get('fuente') == 'Google' and (not es_beta or str(a.get('titulo') or '').startswith('Anuncio de ')):
             continue
         texto_completo = f"{a.get('texto') or ''} {a.get('titulo') or ''}".lower()
         palabras = re.findall(r'[a-záéíóúñ]{4,}', texto_completo)
@@ -2638,7 +2639,7 @@ def index():
         raw_urls_content=raw_urls_content,
         config_google=config_google,
         raw_google_content=raw_google_content,
-        lista_productos=[nombre for nombre, _ in reglas_productos] + [SIN_CLASIFICAR],
+        lista_productos=sorted((nombre for nombre, _ in reglas_productos), key=normalizar) + [SIN_CLASIFICAR],
         raw_productos_content=raw_productos_content,
         companias_sel=companias_sel,
         productos_sel=productos_sel,
@@ -2751,6 +2752,38 @@ def lanzar_scraper():
         return redirect(url_for('index', msg="🚀 Scrapers de Meta y Google lanzados. Los datos se actualizarán en breve."))
     return redirect(url_for('index', msg="⚠️ Error al lanzar: " + " | ".join(errores)))
 
+def excel_reporte(df):
+    # Excel de Funciones Beta: solo las columnas útiles, con nombres claros y fechas reales.
+    filas = df.to_dict('records')
+
+    def fecha(valor):
+        f = parse_date_str(valor)
+        try:
+            return datetime.strptime(f, '%Y-%m-%d').date() if f else None
+        except ValueError:
+            return None
+
+    def texto(r):
+        t = str(r.get('texto') or r.get('titulo') or '').strip()
+        return '' if t.startswith('Anuncio de ') else t
+
+    return pd.DataFrame({
+        'Empresa': [r.get('compania') or '' for r in filas],
+        'Fuente': [r.get('fuente') or 'Meta' for r in filas],
+        'Estado': [r.get('estado') or '' for r in filas],
+        'Texto del anuncio': [texto(r) for r in filas],
+        'Productos': [r.get('productos') or '' for r in filas],
+        'Formato': [r.get('formato') or '' for r in filas],
+        'Duración (s)': [int(r['duracion_segundos']) if pd.notna(r.get('duracion_segundos')) and r.get('duracion_segundos') else None for r in filas],
+        'Plataformas': [r.get('plataformas') or '' for r in filas],
+        'Fecha de inicio': [fecha(r.get('fecha_subida_detectada')) for r in filas],
+        'Fecha última vista': [fecha(fecha_ultima_vista(r)) for r in filas],
+        'Días activo': [r.get('dias_activo') for r in filas],
+        'Winning Ad': ['Sí' if r.get('es_winning_ad') else 'No' for r in filas],
+        'Sigue publicado': ['Sí' if r.get('presente_en_meta') else 'No' for r in filas],
+        'Enlace': [r.get('link_individual') or '' for r in filas],
+    })
+
 @app.route('/descargar_excel')
 @login_required
 def descargar_excel():
@@ -2842,6 +2875,23 @@ def descargar_excel():
         df['es_winning_ad'] = df.apply(lambda r: (r['dias_activo'] >= DIAS_WINNING_AD and str(r.get('estado', '')).strip().lower() == 'activo'), axis=1)
 
         output = io.BytesIO()
+        if es_beta:
+            reporte = excel_reporte(df)
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                reporte.to_excel(writer, index=False, sheet_name='Anuncios')
+                hoja = writer.sheets['Anuncios']
+                hoja.freeze_panes = 'A2'
+                hoja.auto_filter.ref = hoja.dimensions
+                for i, columna in enumerate(reporte.columns, start=1):
+                    largo = max([len(str(columna))] + [len(str(v)) for v in reporte[columna].head(500)])
+                    hoja.column_dimensions[hoja.cell(row=1, column=i).column_letter].width = min(max(largo + 2, 10), 70)
+                    if columna.startswith('Fecha'):
+                        for celda in hoja.iter_rows(min_row=2, min_col=i, max_col=i):
+                            celda[0].number_format = 'DD/MM/YYYY'
+            output.seek(0)
+            filename = f"Reporte_Galac_Ads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            return send_file(output, download_name=filename, as_attachment=True, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Anuncios_Meta')
         output.seek(0)

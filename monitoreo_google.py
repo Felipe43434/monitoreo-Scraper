@@ -1,6 +1,8 @@
 import os
+import re
 import sys
 import json
+import requests
 from datetime import datetime, timedelta, timezone
 import psycopg2
 from dotenv import load_dotenv
@@ -31,6 +33,12 @@ PLATAFORMAS = {
     6: "Red de Display",
 }
 FORMATOS = {1: "Texto", 2: "Imagen", 3: "Video"}
+
+JS_TEXTO = "async (url) => { const r = await fetch(url); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.text(); }"
+
+# Los anuncios de video traen una vista previa (content.js) con la miniatura o el reproductor del
+# video de YouTube; de ahí sale el id. La miniatura usa /vi/<id>/ y el reproductor /embed/<id>.
+PATRON_YOUTUBE = re.compile(r'(?:ytimg\.com/vi(?:_webp)?/|youtube(?:-nocookie)?\.com/(?:embed/|watch\?v=)|youtu\.be/)([\w-]{11})')
 
 JS_RPC = r"""async (freq) => {
     const r = await fetch('/anji/_/rpc/SearchService/SearchCreatives?authuser=', {
@@ -106,6 +114,38 @@ def consultar(page, dominio, plataforma=None):
     return creativos
 
 
+def id_youtube(page, item):
+    try:
+        url = item.get("3", {}).get("1", {}).get("4")
+        if not url:
+            return None
+        js = page.evaluate(JS_TEXTO, url)
+        js = js.replace("\\/", "/").replace("\\x2F", "/").replace("\\u002F", "/")
+        m = PATRON_YOUTUBE.search(js)
+        return m.group(1) if m else None
+    except Exception as e:
+        print(f"  ⚠️ No se pudo leer la vista previa del video: {e}")
+        return None
+
+
+def titulo_youtube(video_id, cache):
+    # oEmbed es público y no necesita clave de API; devuelve 401/404 si el video es privado o se borró.
+    if video_id in cache:
+        return cache[video_id]
+    titulo = None
+    try:
+        r = requests.get("https://www.youtube.com/oembed",
+                         params={"url": f"https://www.youtube.com/watch?v={video_id}", "format": "json"},
+                         timeout=15)
+        if r.ok:
+            # Algunos videos se subieron con el nombre del archivo ("Galac cloud vertical.mp4").
+            titulo = re.sub(r'\.(?:mp4|mov|avi|mkv|webm|m4v)$', '', (r.json().get("title") or "").strip(), flags=re.I) or None
+    except Exception as e:
+        print(f"  ⚠️ No se pudo consultar el título de YouTube {video_id}: {e}")
+    cache[video_id] = titulo
+    return titulo
+
+
 def fecha_desde_epoch(valor):
     try:
         return datetime.fromtimestamp(int(valor["1"]), tz=timezone.utc)
@@ -126,7 +166,9 @@ def guardar_anuncio(anuncio):
                 estado = EXCLUDED.estado,
                 plataformas = EXCLUDED.plataformas,
                 formato = EXCLUDED.formato,
-                titulo = EXCLUDED.titulo,
+                titulo = CASE
+                    WHEN EXCLUDED.titulo LIKE 'Anuncio de %%' AND anuncios.titulo NOT LIKE 'Anuncio de %%'
+                    THEN anuncios.titulo ELSE EXCLUDED.titulo END,
                 presente_en_meta = TRUE,
                 fuente = 'Google',
                 fecha_ultima_vista = EXCLUDED.fecha_ultima_vista
@@ -179,6 +221,8 @@ def procesar_dominio(page, nombre, dominio):
     ahora = datetime.now(timezone.utc)
     links = []
     guardados = 0
+    titulos_yt = {}
+    con_titulo = 0
     for cid, item in creativos.items():
         primera = fecha_desde_epoch(item.get("6", {}))
         ultima = fecha_desde_epoch(item.get("7", {}))
@@ -186,6 +230,14 @@ def procesar_dominio(page, nombre, dominio):
         anunciante = item.get("12", nombre)
         link = f"https://adstransparency.google.com/advertiser/{item['1']}/creative/{cid}?region=VE"
         links.append(link)
+        # El texto de los anuncios de texto e imagen viene dentro de una imagen; en los de video
+        # se usa el título del video de YouTube como texto del anuncio.
+        titulo_video = None
+        if formato == "Video":
+            video_id = id_youtube(page, item)
+            titulo_video = titulo_youtube(video_id, titulos_yt) if video_id else None
+            if titulo_video:
+                con_titulo += 1
         anuncio = {
             "id_anuncio": cid,
             "compania": nombre,
@@ -193,8 +245,8 @@ def procesar_dominio(page, nombre, dominio):
             "estado": "Activo" if ultima and (ahora - ultima) <= timedelta(days=DIAS_PARA_ACTIVO) else "Inactivo",
             "plataformas": ", ".join(plataformas_por_creativo[cid]) or "Google",
             "formato": formato,
-            "titulo": f"Anuncio de {formato.lower()} en Google de {anunciante}"
-                      + (f" (visto por última vez {ultima.strftime('%Y-%m-%d')})" if ultima else ""),
+            "titulo": titulo_video or (f"Anuncio de {formato.lower()} en Google de {anunciante}"
+                      + (f" (visto por última vez {ultima.strftime('%Y-%m-%d')})" if ultima else "")),
             "link_individual": link,
             "fecha_ultima_vista": ultima.strftime('%Y-%m-%d') if ultima else None,
         }
@@ -203,6 +255,9 @@ def procesar_dominio(page, nombre, dominio):
             print(f"  ✨ [{formato}] [{anuncio['estado']}] {nombre} | Plat: {anuncio['plataformas']} | Desde: {anuncio['fecha_subida']}")
 
     print(f"✅ Anuncios de Google registrados para {nombre}: {guardados} de {len(creativos)}")
+    videos = sum(1 for it in creativos.values() if FORMATOS.get(it.get("4")) == "Video")
+    if videos:
+        print(f"🎬 Títulos de YouTube obtenidos: {con_titulo} de {videos} videos")
     marcar_no_detectados(nombre, links)
 
 
