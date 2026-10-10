@@ -25,6 +25,9 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
+      - name: Instalar Tesseract (OCR en español para los anuncios de texto e imagen)
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-spa
+
       - name: Ejecutar script de extracción de Google
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

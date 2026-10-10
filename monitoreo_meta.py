@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg2
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
+import registro_bots
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
@@ -21,6 +22,8 @@ if DATABASE_URL and "sslmode=" not in DATABASE_URL:
     DATABASE_URL = f"{DATABASE_URL}{separador}sslmode=require"
 
 JSON_FILE = "anuncios_guardados.json"
+# Resumen de la corrida para el panel de salud; se crea en main().
+CORRIDA = None
 PROGRESO_FILE = "progreso.json"
 
 MESES_MAP = {
@@ -84,6 +87,54 @@ def texto_oficial(oficial):
         if isinstance(t, str) and t.strip() and '{{' not in t:
             return re.sub(r'\s+', ' ', t).strip()
     return None
+
+def imagen_oficial(oficial):
+    # Miniatura del video o imagen del anuncio. Las URLs de Meta caducan en unos días; cada
+    # corrida las renueva para los anuncios que siguen activos.
+    sn = (oficial or {}).get("snapshot") or {}
+    for video in sn.get("videos") or []:
+        if video.get("video_preview_image_url"):
+            return video["video_preview_image_url"]
+    for imagen in sn.get("images") or []:
+        url = imagen.get("resized_image_url") or imagen.get("original_image_url")
+        if url:
+            return url
+    for card in sn.get("cards") or []:
+        url = card.get("resized_image_url") or card.get("video_preview_image_url") or card.get("original_image_url")
+        if url:
+            return url
+    return None
+
+
+def destino_oficial(oficial):
+    # A dónde lleva el anuncio, según el botón (cta_type) y el enlace: WhatsApp, Messenger, web...
+    sn = (oficial or {}).get("snapshot") or {}
+    cards = sn.get("cards") or []
+    cta = (sn.get("cta_type") or next((c.get("cta_type") for c in cards if c.get("cta_type")), "") or "").upper()
+    link = sn.get("link_url") or next((c.get("link_url") for c in cards if c.get("link_url")), None)
+    host = ""
+    if link:
+        host = urllib.parse.urlparse(link).netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+    if "WHATSAPP" in cta or host in ("wa.me", "api.whatsapp.com", "whatsapp.com", "chat.whatsapp.com", "wa.link"):
+        return "WhatsApp", link
+    if cta == "INSTAGRAM_MESSAGE" or host == "ig.me":
+        return "Instagram (mensaje)", link
+    if cta in ("MESSAGE_PAGE", "SEND_MESSAGE") or host in ("m.me", "messenger.com"):
+        return "Messenger", link
+    if cta == "CALL_NOW" or (link or "").startswith("tel:"):
+        return "Llamada", link
+    if cta in ("SIGN_UP", "APPLY_NOW", "GET_QUOTE", "SUBSCRIBE", "REQUEST_TIME", "GET_OFFER") and host in ("", "fb.me", "facebook.com"):
+        return "Formulario", link
+    if host.endswith("instagram.com"):
+        return "Instagram (perfil)", link
+    if host.endswith("facebook.com") or host == "fb.me":
+        return "Facebook", link
+    if host:
+        return "Sitio web", link
+    return "Sin enlace", None
+
 
 def actualizar_progreso(activo=True, actual=0, total=0, empresa="", porcentaje=0, finalizado=False):
     datos = {
@@ -158,6 +209,7 @@ def inicializar_bd():
         cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS presente_en_meta BOOLEAN DEFAULT TRUE;")
         cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fuente VARCHAR(20) DEFAULT 'Meta';")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS anuncios_link_idx ON anuncios (link_individual);")
+        registro_bots.crear_tablas(cur)
         conn.commit()
         cur.close()
         conn.close()
@@ -228,8 +280,8 @@ def guardar_anuncio(anuncio, bloqueadas):
             ad_id = anuncio['link_individual'].split('id=')[-1]
 
         query = """
-            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, plataformas, formato, duracion_segundos, titulo, link_individual, presente_en_meta)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, plataformas, formato, duracion_segundos, titulo, link_individual, presente_en_meta, imagen_url, destino, destino_url)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s, %s)
             ON CONFLICT (link_individual) DO UPDATE
             SET id_anuncio = COALESCE(NULLIF(EXCLUDED.id_anuncio, ''), NULLIF(anuncios.id_anuncio, '')),
                 compania = EXCLUDED.compania,
@@ -246,7 +298,10 @@ def guardar_anuncio(anuncio, bloqueadas):
                     THEN COALESCE(NULLIF(anuncios.titulo, ''), EXCLUDED.titulo)
                     ELSE EXCLUDED.titulo
                 END,
-                presente_en_meta = TRUE
+                presente_en_meta = TRUE,
+                imagen_url = COALESCE(NULLIF(EXCLUDED.imagen_url, ''), anuncios.imagen_url),
+                destino = COALESCE(NULLIF(EXCLUDED.destino, ''), anuncios.destino),
+                destino_url = COALESCE(NULLIF(EXCLUDED.destino_url, ''), anuncios.destino_url)
             RETURNING id;
         """
         cur.execute(query, (
@@ -258,7 +313,10 @@ def guardar_anuncio(anuncio, bloqueadas):
             anuncio['formato'],
             anuncio['duracion_segundos'],
             anuncio['titulo'],
-            anuncio['link_individual']
+            anuncio['link_individual'],
+            anuncio.get('imagen_url'),
+            anuncio.get('destino'),
+            anuncio.get('destino_url'),
         ))
         res = cur.fetchone()
         conn.commit()
@@ -661,7 +719,10 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
             "formato": formato,
             "duracion_segundos": duracion_final,
             "titulo": titulo_definitivo[:400],
-            "link_individual": link_individual
+            "link_individual": link_individual,
+            "imagen_url": imagen_oficial(oficial),
+            "destino": destino_oficial(oficial)[0] if oficial else None,
+            "destino_url": destino_oficial(oficial)[1] if oficial else None,
         }
 
         if guardar_anuncio(anuncio_data, bloqueadas):
@@ -670,11 +731,17 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
             print(f"  ✨ [{formato}] [{badge_estado}] {nombre_flask} | Plat: {plataformas or '?'} | Dur: {dur_txt} | Fecha: {fecha_final} | Titulo: {titulo_definitivo[:40]}...")
 
     print(f"✅ Anuncios registrados para {nombre_flask}: {guardados}")
+    if CORRIDA:
+        CORRIDA.resultado(nombre_flask, guardados,
+                          aviso=f"{sin_datos_oficiales} sin datos oficiales" if sin_datos_oficiales else None)
     if sin_datos_oficiales:
         print(f"  ⚠️ {sin_datos_oficiales} anuncios sin datos oficiales de Meta: se usaron los datos visibles de la página (plataformas desconocidas).")
 
     if por_pagina:
-        return {"links": links_encontrados, "completo": busqueda_completa(page, len(oficiales), limitado["rate_limit"])}
+        completo = busqueda_completa(page, len(oficiales), limitado["rate_limit"])
+        if CORRIDA and not completo:
+            CORRIDA.resultado(nombre_flask, aviso="Búsqueda incompleta: no se marcaron retiros")
+        return {"links": links_encontrados, "completo": completo}
 
     if datos_anuncios and nombre_flask.lower() not in bloqueadas:
         marcar_no_detectados(nombre_flask, links_encontrados, fecha_desde)
@@ -700,6 +767,18 @@ def busqueda_completa(page, cargados, rate_limit):
     return True
 
 def main():
+    global CORRIDA
+    CORRIDA = registro_bots.Corrida("Meta", DATABASE_URL)
+    try:
+        ejecutar()
+    except Exception as e:
+        print(f"❌ Falla general del bot de Meta: {e}")
+        CORRIDA.terminar(fallo=e)
+        raise
+    CORRIDA.terminar()
+
+
+def ejecutar():
     inicializar_bd()
     bloqueadas = obtener_companias_bloqueadas()
 
@@ -761,6 +840,8 @@ def main():
                     por_empresa[nombre_flask]["completo"] &= resultado["completo"]
             except Exception as e:
                 print(f"❌ Error en {nombre_flask}: {e}")
+                if CORRIDA:
+                    CORRIDA.resultado(nombre_flask, error=e)
                 if nombre_flask in por_empresa:
                     por_empresa[nombre_flask]["completo"] = False
             finally:
@@ -776,6 +857,8 @@ def main():
                 print(f"  ⏭️ {nombre_flask}: búsqueda incompleta, se omite para no marcar retiros por error.")
 
         browser.close()
+        registro_bots.guardar_historial(DATABASE_URL, "Meta",
+                                        [n for n, _, _ in entradas if n.lower() not in bloqueadas])
         actualizar_progreso(activo=False, actual=total_empresas, total=total_empresas, empresa="Completado", porcentaje=100, finalizado=True)
         print("\n✨ Proceso completado exitosamente.")
 

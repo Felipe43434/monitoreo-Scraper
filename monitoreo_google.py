@@ -3,10 +3,22 @@ import re
 import sys
 import json
 import requests
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 import psycopg2
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
+import registro_bots
+
+# OCR para leer el texto de los anuncios de texto e imagen (Google los entrega como imagen).
+# En GitHub Actions se instala Tesseract con el idioma español; si no está, el bot sigue sin OCR.
+try:
+    import pytesseract
+    from PIL import Image, ImageOps
+    pytesseract.get_tesseract_version()
+    OCR_DISPONIBLE = True
+except Exception:
+    OCR_DISPONIBLE = False
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
@@ -73,6 +85,7 @@ def inicializar_bd():
         cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS presente_en_meta BOOLEAN DEFAULT TRUE;")
         cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fuente VARCHAR(20) DEFAULT 'Meta';")
         cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fecha_ultima_vista VARCHAR(10);")
+        registro_bots.crear_tablas(cur)
         conn.commit()
         cur.close()
         conn.close()
@@ -161,6 +174,61 @@ def titulo_youtube(video_id, cache):
     return titulo
 
 
+def imagen_creativo(item):
+    # Los anuncios de texto e imagen traen <img src="...simgad/..."> (URL permanente).
+    html = item.get("3", {}).get("3", {}).get("2") or ""
+    m = re.search(r'src="([^"]+)"', html)
+    return m.group(1) if m else None
+
+
+# Rótulos que Google dibuja dentro del anuncio y no son parte del texto.
+RUIDO_OCR = re.compile(r'(?i)\b(?:patrocinado|sponsored|anuncio|ad)\b\s*[·:•|-]?')
+
+
+def texto_ocr(url_imagen):
+    if not OCR_DISPONIBLE or not url_imagen:
+        return None
+    try:
+        r = requests.get(url_imagen, timeout=20)
+        r.raise_for_status()
+        img = ImageOps.grayscale(Image.open(BytesIO(r.content)))
+        if img.width < 700:  # Tesseract lee mejor con letra más grande
+            escala = 700 / img.width
+            img = img.resize((int(img.width * escala), int(img.height * escala)))
+        datos = pytesseract.image_to_data(img, lang="spa+eng", output_type=pytesseract.Output.DICT)
+        lineas = {}
+        for palabra, conf, bloque, linea in zip(datos["text"], datos["conf"], datos["block_num"], datos["line_num"]):
+            if palabra.strip() and float(conf) >= 60:
+                lineas.setdefault((bloque, linea), []).append(palabra.strip())
+        texto = " ".join(" ".join(p) for p in lineas.values())
+        texto = re.sub(r"\s+", " ", RUIDO_OCR.sub(" ", texto)).strip(" ·•|-")
+        letras = sum(ch.isalpha() for ch in texto)
+        # Se descarta lo que no parece texto real (pocas palabras o mayoría de símbolos).
+        if len(texto.split()) < 3 or letras < 0.6 * len(texto.replace(" ", "")):
+            return None
+        return texto[:400]
+    except Exception as e:
+        print(f"  ⚠️ OCR falló para {url_imagen[:60]}: {e}")
+        return None
+
+
+def titulos_guardados(compania):
+    # Texto ya obtenido en corridas anteriores (OCR o YouTube): no se vuelve a procesar.
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT link_individual, titulo FROM anuncios
+            WHERE fuente = 'Google' AND compania = %s AND titulo IS NOT NULL AND titulo NOT LIKE 'Anuncio de %%'
+        """, (compania,))
+        datos = dict(cur.fetchall())
+        cur.close()
+        conn.close()
+        return datos
+    except Exception:
+        return {}
+
+
 def fecha_desde_epoch(valor):
     try:
         return datetime.fromtimestamp(int(valor["1"]), tz=timezone.utc)
@@ -173,8 +241,8 @@ def guardar_anuncio(anuncio):
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, plataformas, formato, duracion_segundos, titulo, link_individual, presente_en_meta, fuente, fecha_ultima_vista)
-            VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s, TRUE, 'Google', %s)
+            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, plataformas, formato, duracion_segundos, titulo, link_individual, presente_en_meta, fuente, fecha_ultima_vista, imagen_url, destino, destino_url)
+            VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s, TRUE, 'Google', %s, %s, %s, %s)
             ON CONFLICT (link_individual) DO UPDATE
             SET compania = EXCLUDED.compania,
                 fecha_subida = EXCLUDED.fecha_subida,
@@ -186,12 +254,15 @@ def guardar_anuncio(anuncio):
                     THEN anuncios.titulo ELSE EXCLUDED.titulo END,
                 presente_en_meta = TRUE,
                 fuente = 'Google',
-                fecha_ultima_vista = EXCLUDED.fecha_ultima_vista
+                fecha_ultima_vista = EXCLUDED.fecha_ultima_vista,
+                imagen_url = COALESCE(NULLIF(EXCLUDED.imagen_url, ''), anuncios.imagen_url),
+                destino = EXCLUDED.destino,
+                destino_url = EXCLUDED.destino_url
             RETURNING id;
         """, (
             anuncio["id_anuncio"], anuncio["compania"], anuncio["fecha_subida"], anuncio["estado"],
             anuncio["plataformas"], anuncio["formato"], anuncio["titulo"], anuncio["link_individual"],
-            anuncio["fecha_ultima_vista"],
+            anuncio["fecha_ultima_vista"], anuncio.get("imagen_url"), anuncio.get("destino"), anuncio.get("destino_url"),
         ))
         res = cur.fetchone()
         conn.commit()
@@ -225,7 +296,7 @@ def procesar_dominio(page, nombre, dominio):
     creativos = consultar(page, dominio)
     if not creativos:
         print("  Sin anuncios en Venezuela para este dominio.")
-        return
+        return 0
 
     plataformas_por_creativo = {cid: [] for cid in creativos}
     for codigo, nombre_plat in PLATAFORMAS.items():
@@ -238,6 +309,8 @@ def procesar_dominio(page, nombre, dominio):
     guardados = 0
     titulos_yt = {}
     con_titulo = 0
+    ya_leidos = titulos_guardados(nombre)
+    con_ocr = 0
     for cid, item in creativos.items():
         primera = fecha_desde_epoch(item.get("6", {}))
         ultima = fecha_desde_epoch(item.get("7", {}))
@@ -248,11 +321,18 @@ def procesar_dominio(page, nombre, dominio):
         # El texto de los anuncios de texto e imagen viene dentro de una imagen; en los de video
         # se usa el título del video de YouTube como texto del anuncio.
         titulo_video = None
+        imagen = imagen_creativo(item)
         if formato == "Video":
             video_id = id_youtube(page, item)
             titulo_video = titulo_youtube(video_id, titulos_yt) if video_id else None
+            if video_id:
+                imagen = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
             if titulo_video:
                 con_titulo += 1
+        else:
+            titulo_video = ya_leidos.get(link) or texto_ocr(imagen)
+            if titulo_video:
+                con_ocr += 1
         anuncio = {
             "id_anuncio": cid,
             "compania": nombre,
@@ -264,6 +344,9 @@ def procesar_dominio(page, nombre, dominio):
                       + (f" (visto por última vez {ultima.strftime('%Y-%m-%d')})" if ultima else "")),
             "link_individual": link,
             "fecha_ultima_vista": ultima.strftime('%Y-%m-%d') if ultima else None,
+            "imagen_url": imagen,
+            "destino": "Sitio web",
+            "destino_url": f"https://{dominio}",
         }
         if guardar_anuncio(anuncio):
             guardados += 1
@@ -273,15 +356,33 @@ def procesar_dominio(page, nombre, dominio):
     videos = sum(1 for it in creativos.values() if FORMATOS.get(it.get("4")) == "Video")
     if videos:
         print(f"🎬 Títulos de YouTube obtenidos: {con_titulo} de {videos} videos")
+    estaticos = len(creativos) - videos
+    if estaticos:
+        print(f"🔤 Texto leído con OCR: {con_ocr} de {estaticos} anuncios de texto/imagen"
+              + ("" if OCR_DISPONIBLE else " (Tesseract no está instalado: OCR desactivado)"))
     marcar_no_detectados(nombre, links)
+    return guardados
 
 
 def main():
+    corrida = registro_bots.Corrida("Google", DATABASE_URL)
+    try:
+        entradas = ejecutar(corrida)
+    except Exception as e:
+        print(f"❌ Falla general del bot de Google: {e}")
+        corrida.terminar(fallo=e)
+        raise
+    if entradas:
+        registro_bots.guardar_historial(DATABASE_URL, "Google", [n for n, _ in entradas])
+    corrida.terminar()
+
+
+def ejecutar(corrida):
     inicializar_bd()
     entradas = leer_entradas()
     if not entradas:
         print(f"❌ '{URLS_FILE}' no existe o está vacío.")
-        return
+        return entradas
 
     print(f"🚀 Iniciando extracción de Google para {len(entradas)} dominios...")
     with sync_playwright() as p:
@@ -291,11 +392,13 @@ def main():
         page.wait_for_timeout(3000)
         for nombre, dominio in entradas:
             try:
-                procesar_dominio(page, nombre, dominio)
+                corrida.resultado(nombre, procesar_dominio(page, nombre, dominio))
             except Exception as e:
                 print(f"❌ Error en {nombre} ({dominio}): {e}")
+                corrida.resultado(nombre, error=f"{dominio}: {e}")
         browser.close()
     print("\n✨ Proceso de Google completado.")
+    return entradas
 
 
 if __name__ == '__main__':

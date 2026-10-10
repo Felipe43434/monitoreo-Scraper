@@ -1,5 +1,6 @@
 import os
 import io
+import json
 import hmac
 import base64
 import re
@@ -14,6 +15,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from flask import Flask, render_template_string, request, redirect, url_for, send_file, session
 from markupsafe import Markup
+import registro_bots
 
 load_dotenv()
 
@@ -138,6 +140,46 @@ def editor_urls_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+def salud_required(f):
+    # Panel "Salud de los Bots": Administrador y Funciones Beta.
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login', next=request.url))
+        if usuario_actual() not in USUARIOS_EDITAN_URLS:
+            return redirect(url_for('index', msg="⛔ Solo el Administrador y Funciones Beta pueden ver la salud de los bots."))
+        return f(*args, **kwargs)
+    return decorated_function
+
+ESTADOS_CORRIDA = {
+    'ok': ('Correcta', 'success'),
+    'con_errores': ('Con errores', 'warning'),
+    'vacia': ('Sin anuncios', 'warning'),
+    'fallo': ('Falló', 'danger'),
+    'atrasada': ('Atrasada', 'warning'),
+    'sin_datos': ('Sin registros', 'secondary'),
+}
+DIAS_CORRIDA_ATRASADA = 3  # los bots corren cada 2 días
+
+def ultimas_corridas(cur):
+    # Última corrida de cada bot y si hay algo que revisar (falló, vino vacía o no corre hace días).
+    cur.execute("""
+        SELECT DISTINCT ON (fuente) fuente, estado, anuncios, empresas, errores, url_ejecucion,
+               to_char(fin AT TIME ZONE 'America/Caracas', 'YYYY-MM-DD HH24:MI') AS fin_local,
+               (NOW() - fin) > INTERVAL '%s days' AS atrasada
+        FROM corridas_scraper ORDER BY fuente, inicio DESC
+    """ % DIAS_CORRIDA_ATRASADA)
+    filas = {r['fuente']: dict(r) for r in cur.fetchall()}
+    resumen = []
+    for fuente in ('Meta', 'Google'):
+        r = filas.get(fuente) or {'fuente': fuente, 'estado': 'sin_datos'}
+        if r.get('atrasada') and r['estado'] == 'ok':
+            r['estado'] = 'atrasada'
+        r['etiqueta'], r['color'] = ESTADOS_CORRIDA.get(r['estado'], (r['estado'], 'secondary'))
+        r['problema'] = r['estado'] not in ('ok', 'sin_datos')
+        resumen.append(r)
+    return resumen
+
 @app.context_processor
 def inyectar_usuario():
     clave = usuario_actual()
@@ -260,6 +302,8 @@ def init_config_tables():
                     );
                 """)
                 cur.execute("ALTER TABLE accesos_dashboard ADD COLUMN IF NOT EXISTS usuario VARCHAR(50);")
+                # Columnas de vista previa y destino, historial diario y corridas de los bots.
+                registro_bots.crear_tablas(cur)
                 conn.commit()
         except Exception as e:
             print(f"Error inicializando tablas: {e}")
@@ -353,6 +397,61 @@ def clasificar_productos(ad, reglas):
         titulo = ''
     texto = normalizar(f"{ad.get('texto') or ''} {titulo}")
     return [nombre for nombre, patron in reglas if patron.search(texto)]
+
+ICONOS_DESTINO = {
+    'WhatsApp': 'bi-whatsapp', 'Sitio web': 'bi-globe2', 'Messenger': 'bi-messenger',
+    'Instagram (mensaje)': 'bi-instagram', 'Instagram (perfil)': 'bi-instagram', 'Formulario': 'bi-ui-checks',
+    'Facebook': 'bi-facebook', 'Llamada': 'bi-telephone', 'Sin enlace': 'bi-dash-circle',
+}
+
+def destinos_por_empresa(anuncios, maximo=10):
+    # Gráfico "¿A dónde llevan los anuncios?": anuncios filtrados por empresa y destino.
+    conteo = {}
+    for a in anuncios:
+        compania = (a.get('compania') or '').strip()
+        if compania:
+            fila = conteo.setdefault(compania, Counter())
+            fila[a.get('destino') or 'Sin dato'] += 1
+    if not any(d != 'Sin dato' for fila in conteo.values() for d in fila):
+        return {'companias': [], 'destinos': [], 'series': {}}
+    companias = sorted(conteo, key=lambda c: -sum(conteo[c].values()))[:maximo]
+    totales = Counter()
+    for c in companias:
+        totales.update(conteo[c])
+    destinos = [d for d, _ in totales.most_common() if d != 'Sin dato'] + (['Sin dato'] if totales['Sin dato'] else [])
+    return {'companias': companias, 'destinos': destinos,
+            'series': {d: [conteo[c].get(d, 0) for c in companias] for d in destinos}}
+
+def historial_activos(companias_sel, fuente, companias_bloqueadas, dias=90, maximo=7):
+    # Gráfico "Anuncios activos en el tiempo": suma Meta + Google salvo que se filtre por fuente.
+    vacio = {'fechas': [], 'series': []}
+    conn = get_db_connection()
+    if not conn:
+        return vacio
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT fecha, compania, SUM(activos) FROM historial_activos
+                WHERE fecha >= CURRENT_DATE - %s AND (%s = '' OR fuente = %s)
+                GROUP BY fecha, compania ORDER BY fecha
+            """, (dias, fuente or '', fuente or ''))
+            filas = cur.fetchall()
+    except Exception as e:
+        print(f"Error leyendo el historial de anuncios activos: {e}")
+        return vacio
+    finally:
+        conn.close()
+    bloqueadas = {c.lower() for c in companias_bloqueadas}
+    filas = [(f, c, int(n)) for f, c, n in filas
+             if c.lower() not in bloqueadas and (not companias_sel or c in companias_sel)]
+    fechas = sorted({f for f, _, _ in filas})
+    if not fechas:
+        return vacio
+    valores = {(f, c): n for f, c, n in filas}
+    ultima = fechas[-1]
+    companias = sorted({c for _, c, _ in filas}, key=lambda c: (-valores.get((ultima, c), 0), c))[:maximo]
+    return {'fechas': [f.strftime('%d/%m') for f in fechas],
+            'series': [{'label': c, 'data': [valores.get((f, c)) for f in fechas]} for c in companias]}
 
 def estadisticas_por_empresa(anuncios):
     # Tabla "Empresas Monitoreadas": se cuenta sobre los anuncios ya filtrados para que
@@ -831,6 +930,19 @@ HTML_TEMPLATE = """
         .diseno-v2.filtro-recargado .card-filter-container,
         .diseno-v2.filtro-recargado .nav-tabs { animation: none; }
         .diseno-v2 .tab-content { transition: opacity .2s ease; }
+        .celda-miniatura { width: 72px; }
+        .miniatura {
+            position: relative; display: block; width: 56px; height: 56px; border-radius: 10px; overflow: visible;
+            background: var(--border-color);
+        }
+        .miniatura img {
+            width: 56px; height: 56px; object-fit: cover; border-radius: 10px; border: 1px solid var(--border-color);
+            transition: transform .25s cubic-bezier(.22, 1, .36, 1) .25s, box-shadow .25s ease .25s; transform-origin: left center;
+            position: relative; z-index: 1; background: var(--card-bg);
+        }
+        .miniatura:hover img { transform: scale(3.4); box-shadow: 0 18px 40px rgba(15, 23, 42, .35); z-index: 20; }
+        .miniatura.sin-imagen { display: grid; place-items: center; color: var(--bs-secondary-color); font-size: 1.2rem; }
+        @media (prefers-reduced-motion: reduce) { .miniatura img { transition: none; } }
         .badge-nuevo {
             display: inline-block; margin-left: .35rem; padding: .12rem .42rem; border-radius: 999px;
             font-size: .6rem; font-weight: 700; letter-spacing: .04em; line-height: 1.3; vertical-align: middle;
@@ -869,6 +981,15 @@ HTML_TEMPLATE = """
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     {% endif %}
+    <script>
+        // Vista previa caducada o rota (las URLs de Meta vencen en unos días): se muestra un ícono.
+        function sinImagen(img) {
+            const enlace = img.parentElement;
+            enlace.classList.add('sin-imagen');
+            enlace.title = 'La vista previa ya no está disponible; abre el anuncio';
+            enlace.innerHTML = '<i class="bi bi-image"></i>';
+        }
+    </script>
 </head>
 <body class="{% if es_beta %}diseno-v2{% endif %}">
 {% if es_beta %}<script>try { if (sessionStorage.getItem('filtroAuto')) document.body.classList.add('filtro-recargado'); } catch (e) {}</script>{% endif %}
@@ -925,6 +1046,14 @@ HTML_TEMPLATE = """
                         <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-bs-toggle="modal" data-bs-target="#modalCambiarUsuario">
                             <i class="bi bi-people"></i> Cambiar de Usuario {{ nuevo('cambiar_usuario') }}
                         </button>
+                    </li>
+                    {% endif %}
+                    {% if puede_editar_urls %}
+                    <li>
+                        <a class="dropdown-item d-flex align-items-center gap-2" href="/salud">
+                            <i class="bi bi-heart-pulse"></i> Salud de los Bots
+                            {% if alerta_salud %}<span class="badge rounded-pill bg-warning text-dark ms-auto" title="Hay una corrida que revisar">!</span>{% endif %}
+                        </a>
                     </li>
                     {% endif %}
                     {% if es_admin %}
@@ -1529,6 +1658,35 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
+            {% if es_beta %}
+            <div class="row g-3 mb-4">
+                <div class="col-lg-7">
+                    <div class="card-custom p-3 h-100">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <h6 class="fw-bold m-0"><i class="bi bi-activity"></i> Anuncios Activos en el Tiempo <span class="badge bg-warning text-dark">BETA</span></h6>
+                        </div>
+                        <p class="small text-muted mb-2">Cuántos anuncios tenía activos cada empresa en cada corrida de los bots (últimos 90 días).</p>
+                        {% if historial_data.fechas|length >= 2 %}
+                        <div style="height: 300px;"><canvas id="historialChart"></canvas></div>
+                        {% else %}
+                        <div class="text-center text-muted py-5 small"><i class="bi bi-hourglass-split fs-3 d-block mb-2"></i>El gráfico se irá llenando con cada corrida de los bots{% if historial_data.fechas %} (hay datos de {{ historial_data.fechas[0] }}){% endif %}.</div>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="col-lg-5">
+                    <div class="card-custom p-3 h-100">
+                        <h6 class="fw-bold mb-1"><i class="bi bi-signpost-split"></i> ¿A Dónde Llevan los Anuncios? <span class="badge bg-warning text-dark">BETA</span></h6>
+                        <p class="small text-muted mb-2">Destino del botón de cada anuncio que cumple los filtros.</p>
+                        {% if destinos_data.companias %}
+                        <div style="height: {{ [160, 70 + 34 * destinos_data.companias|length]|max }}px;"><canvas id="destinosChart"></canvas></div>
+                        {% else %}
+                        <div class="text-center text-muted py-5 small"><i class="bi bi-hourglass-split fs-3 d-block mb-2"></i>El destino se registra desde la próxima corrida de los bots.</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
             <!-- Tabla de Empresas Registradas -->
             <div class="card-custom overflow-hidden reveal-scroll">
                 <div class="p-3 bg-primary bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
@@ -1609,6 +1767,7 @@ HTML_TEMPLATE = """
                     <table class="table table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr class="small text-muted">
+                                {% if es_beta %}<th>Vista</th>{% endif %}
                                 <th>Empresa</th>
                                 <th>Estado / Desempeño</th>
                                 <th>Plataformas</th>
@@ -1622,6 +1781,17 @@ HTML_TEMPLATE = """
                         <tbody>
                             {% for ad in anuncios %}
                             <tr>
+                                {% if es_beta %}
+                                <td class="celda-miniatura">
+                                    {% if ad.imagen_url %}
+                                    <a href="{{ ad.link_individual }}" target="_blank" rel="noopener" class="miniatura" title="Ver anuncio">
+                                        <img src="{{ ad.imagen_url }}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="sinImagen(this)">
+                                    </a>
+                                    {% else %}
+                                    <span class="miniatura sin-imagen" title="Sin vista previa todavía"><i class="bi bi-image"></i></span>
+                                    {% endif %}
+                                </td>
+                                {% endif %}
                                 <td>
                                     <div class="d-flex align-items-center gap-1">
                                         <span class="fw-bold">{{ ad.compania or 'N/A' }}</span>
@@ -1658,6 +1828,9 @@ HTML_TEMPLATE = """
                                         </span>
                                     {% else %}
                                         {% set f = ad.formato|string|lower %}{% if 'texto' in f %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% elif 'carrusel' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-images"></i> Carrusel</span>{% elif 'dinámico' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-shuffle"></i> Dinámico</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
+                                    {% endif %}
+                                    {% if es_beta and ad.destino %}
+                                    <div class="mt-1"><span class="badge bg-body-secondary text-body-secondary fw-semibold" style="font-size: 0.65rem;" title="{{ ad.destino_url or '' }}"><i class="bi {{ iconos_destino.get(ad.destino, 'bi-box-arrow-up-right') }}"></i> {{ ad.destino }}</span></div>
                                     {% endif %}
                                 </td>
                                 {% set largo_texto = 220 if es_beta else 120 %}
@@ -2099,6 +2272,8 @@ HTML_TEMPLATE = """
     const rawTimelineDataActual = {{ timeline_data_actual|tojson }};
     const formatData = {{ format_data|tojson }};
     const keywordsData = {{ keywords_chart_data|tojson }};
+    const historialData = {{ historial_data|tojson }};
+    const destinosData = {{ destinos_data|tojson }};
 
     let timelineChartInstance = null;
     let timelineModo = 'historico';
@@ -2271,6 +2446,48 @@ HTML_TEMPLATE = """
 
     if (disenoV2 && !reducirMovimiento) {
         document.querySelectorAll('.kpi-row .stat-value').forEach(contarHasta);
+    }
+
+    const paletaEmpresas = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
+    if (document.getElementById('historialChart')) {
+        new Chart(document.getElementById('historialChart'), {
+            type: 'line',
+            data: {
+                labels: historialData.fechas,
+                datasets: historialData.series.map((s, i) => ({
+                    label: s.label, data: s.data, tension: .3, borderWidth: 2, pointRadius: 2,
+                    borderColor: paletaEmpresas[i % paletaEmpresas.length],
+                    backgroundColor: paletaEmpresas[i % paletaEmpresas.length],
+                })),
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, spanGaps: true,
+                interaction: { mode: 'index', intersect: false },
+                plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 10 } } },
+                scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+            },
+        });
+    }
+    if (document.getElementById('destinosChart')) {
+        const coloresDestino = {
+            'WhatsApp': '#25d366', 'Sitio web': '#3b82f6', 'Messenger': '#0ea5e9', 'Instagram (mensaje)': '#e1306c',
+            'Instagram (perfil)': '#f472b6', 'Formulario': '#8b5cf6', 'Facebook': '#1877f2', 'Llamada': '#f59e0b',
+            'Sin enlace': '#94a3b8', 'Sin dato': '#cbd5e1',
+        };
+        new Chart(document.getElementById('destinosChart'), {
+            type: 'bar',
+            data: {
+                labels: destinosData.companias,
+                datasets: destinosData.destinos.map(d => ({
+                    label: d, data: destinosData.series[d], backgroundColor: coloresDestino[d] || '#64748b', borderRadius: 4,
+                })),
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, indexAxis: 'y', layout: { padding: { left: 6 } },
+                plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 8 } } },
+                scales: { x: { stacked: true, beginAtZero: true, ticks: { precision: 0 } }, y: { stacked: true } },
+            },
+        });
     }
 
     {% if es_beta %}
@@ -2452,6 +2669,130 @@ ACCESOS_TEMPLATE = """
 </body>
 </html>
 """
+
+SALUD_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Salud de los Bots | Gálac Ads Intelligence</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .card-custom { background-color: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+        details summary { cursor: pointer; }
+    </style>
+</head>
+<body>
+<div class="container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <div>
+            <h4 class="fw-bold mb-1"><i class="bi bi-heart-pulse text-primary"></i> Salud de los Bots</h4>
+            <p class="text-secondary small mb-0">Cada corrida de los scrapers de Meta y Google (hora de Venezuela). Una corrida se marca atrasada si pasan más de {{ dias_atrasada }} días sin correr.</p>
+        </div>
+        <a href="/" class="btn btn-sm btn-outline-light"><i class="bi bi-arrow-left"></i> Volver al dashboard</a>
+    </div>
+
+    {% if error %}<div class="alert alert-danger border-0">{{ error }}</div>{% endif %}
+
+    <div class="row g-3 mb-4">
+        {% for r in resumen %}
+        <div class="col-md-6">
+            <div class="card-custom p-3 h-100 border-{{ r.color }}">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="small text-secondary text-uppercase fw-semibold"><i class="bi {{ 'bi-meta' if r.fuente == 'Meta' else 'bi-google' }}"></i> Bot de {{ r.fuente }}</span>
+                    <span class="badge bg-{{ r.color }}{% if r.color == 'warning' %} text-dark{% endif %}">{{ r.etiqueta }}</span>
+                </div>
+                {% if r.estado == 'sin_datos' %}
+                <div class="text-secondary small">Todavía no hay corridas registradas (se registran desde la próxima).</div>
+                {% else %}
+                <div class="fs-4 fw-bold">{{ r.anuncios }} <span class="fs-6 text-secondary fw-normal">anuncios en {{ r.empresas }} empresas</span></div>
+                <div class="small text-secondary">Última corrida: {{ r.fin_local }}{% if r.errores %} · <span class="text-warning">{{ r.errores }} con error</span>{% endif %}</div>
+                {% if r.url_ejecucion %}<a href="{{ r.url_ejecucion }}" target="_blank" rel="noopener" class="small">Ver registro en GitHub <i class="bi bi-box-arrow-up-right"></i></a>{% endif %}
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="card-custom overflow-hidden">
+        <div class="table-responsive">
+            <table class="table table-dark table-hover align-middle mb-0">
+                <thead>
+                    <tr class="small text-secondary">
+                        <th>Inicio</th><th>Bot</th><th>Estado</th><th class="text-end">Anuncios</th><th class="text-end">Duración</th><th>Detalle por empresa</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in corridas %}
+                    <tr>
+                        <td class="text-nowrap">{{ c.inicio_local }}</td>
+                        <td>{{ c.fuente }}</td>
+                        <td><span class="badge bg-{{ c.color }}{% if c.color == 'warning' %} text-dark{% endif %}">{{ c.etiqueta }}</span></td>
+                        <td class="text-end fw-semibold">{{ c.anuncios }}</td>
+                        <td class="text-end text-secondary small">{{ c.duracion }}</td>
+                        <td class="small">
+                            <details>
+                                <summary class="text-secondary">{{ c.empresas }} empresas{% if c.errores %} · <span class="text-warning">{{ c.errores }} con error</span>{% endif %}{% if c.url_ejecucion %} · <a href="{{ c.url_ejecucion }}" target="_blank" rel="noopener">GitHub</a>{% endif %}</summary>
+                                {% if c.fallo %}<div class="text-danger mt-1">{{ c.fallo }}</div>{% endif %}
+                                <ul class="list-unstyled mt-1 mb-0">
+                                    {% for nombre, e in c.detalle_empresas %}
+                                    <li>{% if e.error %}❌{% elif e.aviso %}⚠️{% else %}✅{% endif %} <strong>{{ nombre }}</strong>: {{ e.anuncios }} anuncios{% if e.error %} — <span class="text-danger">{{ e.error }}</span>{% elif e.aviso %} — <span class="text-warning">{{ e.aviso }}</span>{% endif %}</li>
+                                    {% endfor %}
+                                </ul>
+                            </details>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6" class="text-center py-5 text-secondary">Todavía no hay corridas registradas. Aparecerán desde la próxima ejecución de los bots.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+</body>
+</html>
+"""
+
+@app.route('/salud')
+@salud_required
+def salud():
+    corridas, resumen, error = [], [], None
+    conn = get_db_connection()
+    if not conn:
+        error = "No se pudo conectar a la base de datos."
+    else:
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                resumen = ultimas_corridas(cur)
+                cur.execute("""
+                    SELECT fuente, estado, anuncios, empresas, errores, detalle, url_ejecucion,
+                           to_char(inicio AT TIME ZONE 'America/Caracas', 'YYYY-MM-DD HH24:MI') AS inicio_local,
+                           EXTRACT(EPOCH FROM (fin - inicio))::int AS segundos
+                    FROM corridas_scraper ORDER BY inicio DESC LIMIT 60
+                """)
+                corridas = [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            error = f"Error consultando las corridas: {e}"
+        finally:
+            conn.close()
+    for c in corridas:
+        c['etiqueta'], c['color'] = ESTADOS_CORRIDA.get(c['estado'], (c['estado'], 'secondary'))
+        segundos = c.get('segundos') or 0
+        c['duracion'] = f"{segundos // 60} min {segundos % 60:02d} s" if segundos else '-'
+        try:
+            detalle = json.loads(c.get('detalle') or '{}')
+        except ValueError:
+            detalle = {}
+        c['fallo'] = detalle.get('fallo')
+        c['detalle_empresas'] = sorted((detalle.get('empresas') or {}).items())
+    if not resumen:
+        resumen = [{'fuente': f, 'estado': 'sin_datos', 'etiqueta': 'Sin registros', 'color': 'secondary'} for f in ('Meta', 'Google')]
+    return render_template_string(SALUD_TEMPLATE, corridas=corridas, resumen=resumen, error=error,
+                                  dias_atrasada=DIAS_CORRIDA_ATRASADA)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -2701,6 +3042,23 @@ def index():
         if estado_ad == 'inactivo':
             anuncios_retirados.append(a)
 
+    historial_data = {'fechas': [], 'series': []}
+    destinos_data = {'companias': [], 'destinos': [], 'series': {}}
+    alerta_salud = False
+    if es_beta:
+        destinos_data = destinos_por_empresa(anuncios)
+        historial_data = historial_activos(companias_sel, fuente, companias_bloqueadas)
+    if usuario_actual() in USUARIOS_EDITAN_URLS:
+        conn_salud = get_db_connection()
+        if conn_salud:
+            try:
+                with conn_salud.cursor(cursor_factory=RealDictCursor) as cur:
+                    alerta_salud = any(r['problema'] for r in ultimas_corridas(cur))
+            except Exception as e:
+                print(f"Error leyendo la salud de los bots: {e}")
+            finally:
+                conn_salud.close()
+
     if es_beta:
         stats_empresas = estadisticas_por_empresa(anuncios)
         stats_empresas_vigentes = estadisticas_por_empresa([a for a in anuncios if a.get('presente_en_meta')])
@@ -2800,6 +3158,10 @@ def index():
         format_data=format_data,
         stats_empresas=stats_empresas,
         stats_empresas_vigentes=stats_empresas_vigentes,
+        historial_data=historial_data,
+        destinos_data=destinos_data,
+        iconos_destino=ICONOS_DESTINO,
+        alerta_salud=alerta_salud,
         msg=msg
     )
 
@@ -2925,7 +3287,10 @@ def excel_reporte(df):
         'Días activo': [r.get('dias_activo') for r in filas],
         'Winning Ad': ['Sí' if r.get('es_winning_ad') else 'No' for r in filas],
         'Sigue publicado': ['Sí' if r.get('presente_en_meta') else 'No' for r in filas],
+        'Destino': [r.get('destino') or '' for r in filas],
+        'Enlace de destino': [r.get('destino_url') or '' for r in filas],
         'Enlace': [r.get('link_individual') or '' for r in filas],
+        'Imagen': [r.get('imagen_url') or '' for r in filas],
     })
 
 @app.route('/descargar_excel')
