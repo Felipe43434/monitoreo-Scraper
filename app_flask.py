@@ -765,6 +765,25 @@ HTML_TEMPLATE = """
         .diseno-v2.filtro-recargado .card-filter-container,
         .diseno-v2.filtro-recargado .nav-tabs { animation: none; }
         .diseno-v2 .tab-content { transition: opacity .2s ease; }
+        .texto-completo { cursor: help; text-decoration: underline dotted rgba(127, 127, 127, .5); text-underline-offset: 3px; }
+        /* Texto completo del anuncio: mismo fondo, borde y letra que las tarjetas, en modo claro y oscuro */
+        .tooltip.tooltip-texto {
+            --bs-tooltip-bg: var(--card-bg);
+            --bs-tooltip-color: var(--text-main);
+            --bs-tooltip-opacity: 1;
+            --bs-tooltip-max-width: 440px;
+            --bs-tooltip-font-size: .8rem;
+            font-family: inherit;
+            filter: drop-shadow(0 12px 24px rgba(15, 23, 42, .22));
+        }
+        .diseno-v2 .tooltip.tooltip-texto { font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .tooltip-texto .tooltip-inner {
+            text-align: left; white-space: pre-line; line-height: 1.5;
+            padding: .65rem .85rem; border: 1px solid var(--border-color); border-radius: 12px;
+        }
+        .tooltip-texto.fade { transition: opacity .2s ease, translate .2s cubic-bezier(.22, 1, .36, 1); }
+        .tooltip-texto.fade:not(.show) { translate: 0 4px; }
+        @media (prefers-reduced-motion: reduce) { .tooltip-texto.fade:not(.show) { translate: none; } }
         .diseno-v2.aplicando-filtros .tab-content { opacity: .45; pointer-events: none; }
         @media (prefers-reduced-motion: reduce) {
             .diseno-v2 .badge-new { animation: none; }
@@ -1178,11 +1197,12 @@ HTML_TEMPLATE = """
 
             <!-- 2. Selección Múltiple Compañías -->
             <div class="col-md-3 col-lg-2">
-                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-building"></i> Compañías ({% if companias_sel %}{{ companias_sel|length }}{% else %}Todas{% endif %})</label>
+                <label class="form-label small fw-semibold text-muted mb-1">{% set todas_companias = es_beta and lista_companias and lista_companias|reject('in', companias_sel)|list|length == 0 %}
+                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-building"></i> Compañías ({% if companias_sel and not todas_companias %}{{ companias_sel|length }}{% else %}Todas{% endif %})</label>
                 <div class="dropdown">
                     <button class="form-select form-select-sm text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
                         <span class="text-truncate">
-                            {% if companias_sel %}
+                            {% if companias_sel and not todas_companias %}
                                 {{ companias_sel|join(', ') }}
                             {% else %}
                                 Todas ({{ lista_companias|length }})
@@ -1191,7 +1211,7 @@ HTML_TEMPLATE = """
                     </button>
                     <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow-lg">
                         <div class="form-check pb-1 mb-1 border-bottom">
-                            <input class="form-check-input" type="checkbox" id="selectAllCompanies" onchange="toggleAllCompanies(this)">
+                            <input class="form-check-input" type="checkbox" id="selectAllCompanies" onchange="toggleAllCompanies(this)" {% if todas_companias %}checked{% endif %}>
                             <label class="form-check-label small fw-bold" for="selectAllCompanies">Seleccionar Todo</label>
                         </div>
                         {% for comp in lista_companias %}
@@ -1289,9 +1309,14 @@ HTML_TEMPLATE = """
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-box-seam"></i> Producto <span class="badge bg-warning text-dark">BETA</span></label>
                 <div class="dropdown">
                     <button class="form-select form-select-sm text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
-                        <span class="text-truncate">{% if productos_sel %}{{ productos_sel|join(', ') }}{% else %}Todos{% endif %}</span>
+                        {% set todos_productos = lista_productos|reject('in', productos_sel)|list|length == 0 %}
+                        <span class="text-truncate">{% if productos_sel and not todos_productos %}{{ productos_sel|join(', ') }}{% else %}Todos ({{ lista_productos|length }}){% endif %}</span>
                     </button>
                     <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow-lg" style="min-width: 240px;">
+                        <div class="form-check pb-1 mb-1 border-bottom">
+                            <input class="form-check-input" type="checkbox" id="selectAllProductos" onchange="document.querySelectorAll('.prod-checkbox').forEach(cb => cb.checked = this.checked)" {% if todos_productos %}checked{% endif %}>
+                            <label class="form-check-label small fw-bold" for="selectAllProductos">Seleccionar Todo</label>
+                        </div>
                         {% for p in lista_productos %}
                         <div class="form-check">
                             <input class="form-check-input prod-checkbox" type="checkbox" name="producto" value="{{ p }}" id="prod_{{ loop.index }}" {% if p in productos_sel %}checked{% endif %}>
@@ -1553,7 +1578,8 @@ HTML_TEMPLATE = """
                                 </td>
                                 {% set largo_texto = 220 if es_beta else 120 %}
                                 <td class="small text-muted" style="{% if es_beta %}min-width: 320px; max-width: 440px;{% else %}max-width: 280px;{% endif %}">
-                                    {{ (ad.texto or ad.titulo or 'Sin descripción')[:largo_texto] }}{% if (ad.texto or ad.titulo or '')|length > largo_texto %}...{% endif %}
+                                    {% set texto_ad = ad.texto or ad.titulo or 'Sin descripción' %}
+                                    {% if es_beta and texto_ad|length > largo_texto %}<span class="texto-completo" data-bs-title="{{ texto_ad }}">{{ texto_ad[:largo_texto] }}...</span>{% else %}{{ texto_ad[:largo_texto] }}{% if (ad.texto or ad.titulo or '')|length > largo_texto %}...{% endif %}{% endif %}
                                     {% if es_beta and ad.productos %}
                                     <div class="mt-1 d-flex flex-wrap gap-1">
                                         {% for p in ad.productos %}{% if p in productos_sel %}<span class="badge bg-primary text-white shadow-sm" style="font-size: 0.65rem;" title="Producto filtrado"><i class="bi bi-check-circle-fill"></i> {{ p }}</span>{% else %}<span class="badge bg-primary-subtle text-primary-emphasis{% if productos_sel %} opacity-50{% endif %}" style="font-size: 0.65rem;"><i class="bi bi-box-seam"></i> {{ p }}</span>{% endif %}{% endfor %}
@@ -2213,6 +2239,15 @@ HTML_TEMPLATE = """
             });
         });
 
+        [['#selectAllCompanies', '.comp-checkbox'], ['#selectAllProductos', '.prod-checkbox']].forEach(([todo, cada]) => {
+            const maestra = document.querySelector(todo);
+            const casillas = document.querySelectorAll(cada);
+            if (!maestra) return;
+            casillas.forEach(cb => cb.addEventListener('change', () => {
+                maestra.checked = [...casillas].every(c => c.checked);
+            }));
+        });
+
         // Compañías y Productos: se aplican al cerrar el desplegable para poder marcar varios seguidos.
         form.querySelectorAll('.dropdown').forEach(desplegable => {
             let cambiado = false;
@@ -2221,6 +2256,14 @@ HTML_TEMPLATE = """
             desplegable.addEventListener('hidden.bs.dropdown', () => {
                 if (cambiado) aplicar();
             });
+        });
+
+        // Texto completo del anuncio al dejar el mouse encima; la espera evita que salte al pasar de largo.
+        document.addEventListener('DOMContentLoaded', () => {
+            if (!window.bootstrap) return;
+            document.querySelectorAll('.texto-completo').forEach(el => new bootstrap.Tooltip(el, {
+                delay: { show: 700, hide: 100 }, placement: 'top', container: 'body', customClass: 'tooltip-texto',
+            }));
         });
 
         const previo = leer('filtroAuto');

@@ -95,6 +95,21 @@ def leer_entradas():
     return entradas
 
 
+def rpc_con_reintentos(page, freq, intentos=3):
+    # Google a veces responde 404 a la API desde GitHub Actions (10-oct-2026, una corrida entera
+    # falló y la siguiente funcionó): se recarga la página y se reintenta antes de rendirse.
+    for intento in range(1, intentos + 1):
+        try:
+            return page.evaluate(JS_RPC, freq)
+        except Exception as e:
+            if intento == intentos:
+                raise
+            print(f"  ⚠️ La API de Google falló ({e}); reintento {intento} de {intentos - 1}...")
+            page.wait_for_timeout(5000 * intento)
+            page.goto("https://adstransparency.google.com/?region=VE", wait_until="domcontentloaded", timeout=90000)
+            page.wait_for_timeout(3000)
+
+
 def consultar(page, dominio, plataforma=None):
     filtro = {"8": [REGION_CODIGO], "12": {"1": dominio, "2": True}}
     if plataforma is not None:
@@ -105,7 +120,7 @@ def consultar(page, dominio, plataforma=None):
         freq = {"2": 40, "3": filtro, "7": {"1": 1, "2": 0, "3": 2840}}
         if token:
             freq["4"] = token
-        data = json.loads(page.evaluate(JS_RPC, freq))
+        data = json.loads(rpc_con_reintentos(page, freq))
         for item in data.get("1", []):
             creativos[item["2"]] = item
         token = data.get("2")
