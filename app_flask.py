@@ -140,14 +140,17 @@ def editor_urls_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+# Panel "Salud de los Bots": por ahora solo Funciones Beta. Al liberarlo se agrega USUARIO_ADMIN
+# (y la entrada en FUNCIONES_NUEVAS para que el Administrador vea la etiqueta NEW).
+USUARIOS_SALUD = (USUARIO_BETA,)
+
 def salud_required(f):
-    # Panel "Salud de los Bots": Administrador y Funciones Beta.
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not session.get('logged_in'):
             return redirect(url_for('login', next=request.url))
-        if usuario_actual() not in USUARIOS_EDITAN_URLS:
-            return redirect(url_for('index', msg="⛔ Solo el Administrador y Funciones Beta pueden ver la salud de los bots."))
+        if usuario_actual() not in USUARIOS_SALUD:
+            return redirect(url_for('index', msg="⛔ Esa sección todavía no está disponible para tu usuario."))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -160,6 +163,41 @@ ESTADOS_CORRIDA = {
     'sin_datos': ('Sin registros', 'secondary'),
 }
 DIAS_CORRIDA_ATRASADA = 3  # los bots corren cada 2 días
+WORKFLOWS_BOTS = {'Meta': '.github/workflows/scraper.yml', 'Google': '.github/workflows/scraper_google.yml'}
+
+def proxima_ejecucion(ruta_workflow, ahora=None):
+    # Lee el cron del workflow ("M H */N * *" o "M H * * *") y calcula la próxima ejecución en UTC.
+    # GitHub puede atrasar las ejecuciones programadas; es la hora prevista, no garantizada.
+    try:
+        with open(ruta_workflow, encoding='utf-8') as f:
+            m = re.search(r"cron:\s*['\"](\d+)\s+(\d+)\s+(\*|\*/\d+)\s+\*\s+\*['\"]", f.read())
+    except OSError:
+        return None
+    if not m:
+        return None
+    minuto, hora = int(m.group(1)), int(m.group(2))
+    cada = int(m.group(3)[2:]) if m.group(3).startswith('*/') else 1
+    ahora = ahora or datetime.now(timezone.utc)
+    dia = ahora.date()
+    for _ in range(64):
+        candidato = datetime(dia.year, dia.month, dia.day, hora, minuto, tzinfo=timezone.utc)
+        # */N en el día del mes = días 1, 1+N, 1+2N... (se reinicia cada mes)
+        if candidato > ahora and (dia.day - 1) % cada == 0:
+            return candidato
+        dia += timedelta(days=1)
+    return None
+
+DIAS_SEMANA = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom']
+
+def proximas_busquedas():
+    proximas = []
+    for fuente, ruta in WORKFLOWS_BOTS.items():
+        fecha = proxima_ejecucion(ruta)
+        if fecha:
+            local = fecha - timedelta(hours=4)
+            proximas.append({'fuente': fuente, 'iso': fecha.isoformat(),
+                             'local': f"{DIAS_SEMANA[local.weekday()]} {local.strftime('%d/%m')} a las {local.strftime('%I:%M %p').lower().lstrip('0')}"})
+    return proximas
 
 def ultimas_corridas(cur):
     # Última corrida de cada bot y si hay algo que revisar (falló, vino vacía o no corre hace días).
@@ -188,6 +226,7 @@ def inyectar_usuario():
         'es_admin': clave == USUARIO_ADMIN,
         'es_beta': clave == USUARIO_BETA,
         'puede_editar_urls': clave in USUARIOS_EDITAN_URLS,
+        've_salud': clave in USUARIOS_SALUD,
         'nuevo': lambda funcion: Markup('<span class="badge-nuevo" title="Función nueva">NEW</span>')
                  if clave != USUARIO_BETA and es_funcion_nueva(funcion) else '',
         'puede_cambiar_usuario': puede_cambiar_usuario(),
@@ -1048,7 +1087,7 @@ HTML_TEMPLATE = """
                         </button>
                     </li>
                     {% endif %}
-                    {% if puede_editar_urls %}
+                    {% if ve_salud %}
                     <li>
                         <a class="dropdown-item d-flex align-items-center gap-2" href="/salud">
                             <i class="bi bi-heart-pulse"></i> Salud de los Bots
@@ -2697,6 +2736,21 @@ SALUD_TEMPLATE = """
 
     {% if error %}<div class="alert alert-danger border-0">{{ error }}</div>{% endif %}
 
+    {% if proximas %}
+    <div class="card-custom p-3 mb-3">
+        <div class="d-flex flex-wrap align-items-center gap-3">
+            <span class="small text-secondary text-uppercase fw-semibold"><i class="bi bi-alarm"></i> Próxima búsqueda automática</span>
+            {% for p in proximas %}
+            <span class="d-flex align-items-center gap-2">
+                <span class="fw-semibold">{{ p.fuente }}:</span> {{ p.local }}
+                <span class="badge bg-primary-subtle text-primary-emphasis cuenta-regresiva" data-fecha="{{ p.iso }}">…</span>
+            </span>
+            {% endfor %}
+        </div>
+        <div class="small text-secondary mt-1">Hora de Venezuela. GitHub a veces atrasa las ejecuciones programadas unos minutos u horas; también puedes lanzarlas antes con "Sincronizar".</div>
+    </div>
+    {% endif %}
+
     <div class="row g-3 mb-4">
         {% for r in resumen %}
         <div class="col-md-6">
@@ -2753,6 +2807,19 @@ SALUD_TEMPLATE = """
         </div>
     </div>
 </div>
+<script>
+    // Cuenta regresiva hasta la próxima búsqueda automática; se actualiza cada minuto.
+    function actualizarCuentas() {
+        document.querySelectorAll('.cuenta-regresiva').forEach(el => {
+            const falta = new Date(el.dataset.fecha) - new Date();
+            if (falta <= 0) { el.textContent = 'en curso o por empezar'; return; }
+            const min = Math.floor(falta / 60000), d = Math.floor(min / 1440), h = Math.floor((min % 1440) / 60), m = min % 60;
+            el.textContent = 'en ' + (d ? d + ' d ' : '') + (d || h ? h + ' h ' : '') + m + ' min';
+        });
+    }
+    actualizarCuentas();
+    setInterval(actualizarCuentas, 60000);
+</script>
 </body>
 </html>
 """
@@ -2792,7 +2859,7 @@ def salud():
     if not resumen:
         resumen = [{'fuente': f, 'estado': 'sin_datos', 'etiqueta': 'Sin registros', 'color': 'secondary'} for f in ('Meta', 'Google')]
     return render_template_string(SALUD_TEMPLATE, corridas=corridas, resumen=resumen, error=error,
-                                  dias_atrasada=DIAS_CORRIDA_ATRASADA)
+                                  dias_atrasada=DIAS_CORRIDA_ATRASADA, proximas=proximas_busquedas())
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -3048,7 +3115,7 @@ def index():
     if es_beta:
         destinos_data = destinos_por_empresa(anuncios)
         historial_data = historial_activos(companias_sel, fuente, companias_bloqueadas)
-    if usuario_actual() in USUARIOS_EDITAN_URLS:
+    if usuario_actual() in USUARIOS_SALUD:
         conn_salud = get_db_connection()
         if conn_salud:
             try:
