@@ -107,6 +107,18 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+USUARIOS_EDITAN_URLS = (USUARIO_ADMIN, USUARIO_BETA)
+
+def editor_urls_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login', next=request.url))
+        if usuario_actual() not in USUARIOS_EDITAN_URLS:
+            return redirect(url_for('index', msg="⛔ Solo el Administrador y Funciones Beta pueden modificar las URLs."))
+        return f(*args, **kwargs)
+    return decorated_function
+
 @app.context_processor
 def inyectar_usuario():
     clave = usuario_actual()
@@ -114,6 +126,7 @@ def inyectar_usuario():
         'usuario_nombre': USUARIOS.get(clave, {}).get('nombre', clave),
         'es_admin': clave == USUARIO_ADMIN,
         'es_beta': clave == USUARIO_BETA,
+        'puede_editar_urls': clave in USUARIOS_EDITAN_URLS,
         'puede_cambiar_usuario': puede_cambiar_usuario(),
         'usuario_origen_nombre': USUARIOS.get(usuario_origen(), {}).get('nombre', usuario_origen()),
         'cambio_pide_password': {u: cambio_requiere_password(u) for u in USUARIOS},
@@ -961,14 +974,14 @@ HTML_TEMPLATE = """
                         <span class="badge bg-secondary-subtle text-secondary">{{ config_urls|length }} enlaces detectados</span>
                     </div>
                     
-                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-3 bg-dark text-light border-secondary" rows="10" placeholder="Nombre en Panel | Nombre en Meta | https://www.facebook.com/ads/library/?..." {% if not es_admin %}readonly{% endif %}>{{ raw_urls_content }}</textarea>
+                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-3 bg-dark text-light border-secondary" rows="10" placeholder="Nombre en Panel | Nombre en Meta | https://www.facebook.com/ads/library/?..." {% if not puede_editar_urls %}readonly{% endif %}>{{ raw_urls_content }}</textarea>
                     
                     <div class="d-flex justify-content-between align-items-center">
                         <small class="text-secondary"><i class="bi bi-github"></i> Se sincronizará directamente con el archivo <code>urls.txt</code> de tu repositorio.</small>
-                        {% if es_admin %}
+                        {% if puede_editar_urls %}
                         <button type="submit" class="btn btn-sm btn-primary px-3"><i class="bi bi-cloud-arrow-up"></i> Guardar en GitHub</button>
                         {% else %}
-                        <span class="small text-warning"><i class="bi bi-lock-fill"></i> Solo el Administrador puede modificar las URLs</span>
+                        <span class="small text-warning"><i class="bi bi-lock-fill"></i> Solo el Administrador y Funciones Beta pueden modificar las URLs</span>
                         {% endif %}
                     </div>
                 </form>
@@ -1032,15 +1045,15 @@ HTML_TEMPLATE = """
                         <span class="badge bg-secondary-subtle text-secondary">{{ config_google|length }} dominios detectados</span>
                     </div>
 
-                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-2 bg-dark text-light border-secondary" rows="8" placeholder="Nombre en Panel | galac.com" {% if not es_admin %}readonly{% endif %}>{{ raw_google_content }}</textarea>
+                    <textarea name="raw_urls" class="form-control form-control-sm font-monospace mb-2 bg-dark text-light border-secondary" rows="8" placeholder="Nombre en Panel | galac.com" {% if not puede_editar_urls %}readonly{% endif %}>{{ raw_google_content }}</textarea>
                     <p class="small text-muted mb-3">Usa el mismo "Nombre en Panel" que en la pestaña Meta para que los anuncios de ambas fuentes se agrupen en la misma empresa. Se buscan los anuncios mostrados en Venezuela en el Centro de Transparencia de Anuncios de Google.</p>
 
                     <div class="d-flex justify-content-between align-items-center">
                         <small class="text-secondary"><i class="bi bi-github"></i> Se sincronizará con el archivo <code>urls_google.txt</code> de tu repositorio.</small>
-                        {% if es_admin %}
+                        {% if puede_editar_urls %}
                         <button type="submit" class="btn btn-sm btn-primary px-3"><i class="bi bi-cloud-arrow-up"></i> Guardar en GitHub</button>
                         {% else %}
-                        <span class="small text-warning"><i class="bi bi-lock-fill"></i> Solo el Administrador puede modificar las URLs</span>
+                        <span class="small text-warning"><i class="bi bi-lock-fill"></i> Solo el Administrador y Funciones Beta pueden modificar las URLs</span>
                         {% endif %}
                     </div>
                 </form>
@@ -2703,7 +2716,7 @@ def index():
     )
 
 @app.route('/guardar_urls_txt', methods=['POST'])
-@admin_required
+@editor_urls_required
 def guardar_urls_txt():
     raw_urls = request.form.get('raw_urls', '').strip()
     success, message = update_github_urls_file(raw_urls)
@@ -2713,7 +2726,7 @@ def guardar_urls_txt():
         return redirect(url_for('index', msg=f"❌ {message}"))
 
 @app.route('/guardar_urls_google', methods=['POST'])
-@admin_required
+@editor_urls_required
 def guardar_urls_google():
     raw_urls = request.form.get('raw_urls', '').strip()
     success, message = update_github_urls_file(raw_urls, URLS_GOOGLE_FILE_PATH)
