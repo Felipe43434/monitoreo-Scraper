@@ -1921,7 +1921,7 @@ HTML_TEMPLATE = """
                 <div class="col-lg-5">
                     <div class="card-custom p-3">
                         <h6 class="fw-bold mb-3"><i class="bi bi-tags"></i> Frecuencia de Términos</h6>
-                        <div class="table-responsive" style="max-height: 360px; overflow-y: auto;">
+                        <div class="table-responsive" style="max-height: {{ 560 if es_beta else 360 }}px; overflow-y: auto;">
                             <table class="table table-sm table-hover align-middle">
                                 <thead class="table-light">
                                     <tr class="small text-muted">
@@ -2711,7 +2711,10 @@ def index():
     pct_otros = round((total_otros / total_anuncios * 100), 1) if total_anuncios > 0 else 0
 
     palabras_empresas = set()
-    for comp in lista_companias:
+    # Desde que el panel usa nombres cortos ("Fina"), el nombre largo ("Fina Partner") solo queda
+    # como nombre de búsqueda en urls.txt: se excluyen ambos para que "partner" no salga en el ranking.
+    nombres_empresas = list(lista_companias) + [c.get('nombre_bot') for c in config_urls]
+    for comp in nombres_empresas:
         if comp:
             tokens = re.findall(r'[a-záéíóúñ0-9]+', comp.lower())
             for t in tokens:
