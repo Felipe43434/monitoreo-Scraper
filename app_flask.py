@@ -9,7 +9,7 @@ import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, parse_qs, quote
 from collections import Counter
 from functools import wraps
 import pandas as pd
@@ -236,6 +236,7 @@ def inyectar_usuario():
         'es_admin': clave == USUARIO_ADMIN,
         'es_beta': clave == USUARIO_BETA,
         'puede_editar_urls': clave in USUARIOS_EDITAN_URLS,
+        'usa_formulario_empresas': clave in USUARIOS_FORMULARIO_EMPRESAS,
         'url_con_filtros': url_con_filtros,
         've_salud': clave in USUARIOS_SALUD,
         'nuevo': lambda funcion: Markup('<span class="badge-nuevo" title="Función nueva">NEW</span>')
@@ -609,6 +610,126 @@ def parse_urls_google(raw_text):
         if len(parts) >= 2 and parts[1]:
             items.append({'nombre_flask': parts[0], 'dominio': parts[1].lower()})
     return items
+
+# ---------- Formulario de empresas (Beta): agregar / editar / eliminar sin escribir el formato a mano ----------
+# Por ahora solo Funciones Beta; al liberarlo, todos los usuarios podrán usarlo (pedido del 10-oct-2026).
+USUARIOS_FORMULARIO_EMPRESAS = (USUARIO_BETA,)
+
+URL_PAGINA_META = ("https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL"
+                   "&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id={}")
+URL_BUSQUEDA_META = ("https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=VE"
+                     "&is_targeted_country=false&media_type=all&q={}&search_type=keyword_unordered")
+AYUDA_ENLACE_META = ('Abre la Biblioteca de Anuncios de Meta, busca la empresa, entra a su página '
+                     '(clic en su nombre o en "Ver todos los anuncios") y copia el enlace de la barra del navegador.')
+
+def tipo_entrada_meta(url):
+    m = re.search(r'view_all_page_id=(\d+)', url or '')
+    return ('pagina', m.group(1)) if m else ('palabra', None)
+
+def normalizar_entrada_meta(texto, nombre):
+    """Convierte lo que pega el usuario en una línea válida de urls.txt.
+    Acepta el enlace de la página en la Biblioteca de Anuncios (lo más preciso), un enlace de búsqueda
+    o simplemente un nombre (búsqueda por palabra clave). Devuelve (entrada, error)."""
+    t = (texto or '').strip()
+    if not t:
+        return None, None
+    if '|' in t:
+        return None, 'El enlace no puede contener el carácter "|".'
+    es_enlace = re.match(r'^(https?://)?([a-z0-9-]+\.)*facebook\.com/', t, re.I) or t.lower().startswith(('http://', 'https://', 'www.'))
+    if not es_enlace:
+        if len(t) < 2:
+            return None, 'Escribe al menos 2 letras para buscar por nombre.'
+        return {'url': URL_BUSQUEDA_META.format(quote(t)), 'bot': t, 'tipo': 'palabra'}, None
+    if not re.match(r'^https?://', t, re.I):
+        t = 'https://' + t
+    partes = urlparse(t)
+    host = partes.netloc.lower().split(':')[0]
+    for prefijo in ('www.', 'm.', 'web.', 'es-la.', 'es-es.'):
+        if host.startswith(prefijo):
+            host = host[len(prefijo):]
+    if host != 'facebook.com':
+        return None, 'El enlace de Meta debe ser de facebook.com (Biblioteca de Anuncios). ' + AYUDA_ENLACE_META
+    consulta = parse_qs(partes.query)
+    pagina = (consulta.get('view_all_page_id') or [''])[0]
+    if pagina.isdigit():
+        return {'url': URL_PAGINA_META.format(pagina), 'bot': nombre, 'tipo': 'pagina', 'id': pagina}, None
+    termino = (consulta.get('q') or [''])[0].strip()
+    if partes.path.startswith('/ads/library') and termino:
+        return {'url': URL_BUSQUEDA_META.format(quote(termino)), 'bot': termino, 'tipo': 'palabra'}, None
+    if partes.path.startswith('/ads/library') and consulta.get('id'):
+        return None, 'Ese enlace es de un solo anuncio, no de la empresa. ' + AYUDA_ENLACE_META
+    return None, 'No se encontró la página de la empresa en ese enlace. ' + AYUDA_ENLACE_META
+
+def normalizar_dominio(texto):
+    t = (texto or '').strip().lower()
+    if not t:
+        return None, None
+    if '://' not in t:
+        t = 'http://' + t
+    host = urlparse(t).netloc.split('@')[-1].split(':')[0]
+    if host.startswith('www.'):
+        host = host[4:]
+    if not re.fullmatch(r'(?:[a-z0-9-]+\.)+[a-z]{2,}', host):
+        return None, f'"{texto.strip()}" no parece un sitio web válido (ejemplo: galac.com).'
+    return host, None
+
+def empresas_configuradas(raw_meta, raw_google):
+    # Une urls.txt y urls_google.txt por "Nombre en Panel", en el orden en que aparecen.
+    empresas = {}
+    for item in parse_urls_txt(raw_meta):
+        tipo, pagina = tipo_entrada_meta(item['url'])
+        e = empresas.setdefault(item['nombre_flask'], {'nombre': item['nombre_flask'], 'meta': [], 'google': []})
+        e['meta'].append({'url': item['url'], 'bot': item['nombre_bot'], 'tipo': tipo, 'id': pagina})
+    for item in parse_urls_google(raw_google):
+        e = empresas.setdefault(item['nombre_flask'], {'nombre': item['nombre_flask'], 'meta': [], 'google': []})
+        e['google'].append(item['dominio'])
+    return list(empresas.values())
+
+def reemplazar_lineas_empresa(contenido, nombre_original, nuevas):
+    # Quita las líneas de esa empresa y pone las nuevas en el mismo lugar (o al final si es nueva),
+    # sin tocar el resto del archivo ni sus comentarios.
+    salto = '\r\n' if '\r\n' in (contenido or '') else '\n'
+    salida, posicion = [], None
+    for linea in (contenido or '').splitlines():
+        limpia = linea.strip()
+        es_de_empresa = (nombre_original is not None and limpia and not limpia.startswith('#') and '|' in limpia
+                         and limpia.split('|')[0].strip() == nombre_original)
+        if es_de_empresa:
+            if posicion is None:
+                posicion = len(salida)
+            continue
+        salida.append(linea)
+    if posicion is None:
+        while salida and not salida[-1].strip():
+            salida.pop()
+        posicion = len(salida)
+    salida[posicion:posicion] = nuevas
+    return salto.join(salida) + salto if salida else ''
+
+def renombrar_empresa_en_bd(anterior, nuevo):
+    # Al cambiar el nombre en el panel, los anuncios ya guardados pasan al nombre nuevo (si no, la
+    # empresa quedaría partida en dos).
+    conn = get_db_connection()
+    if not conn:
+        return 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE anuncios SET compania = %s WHERE compania = %s", (nuevo, anterior))
+            total = cur.rowcount
+            cur.execute("""UPDATE companias_bloqueadas SET compania = %s
+                           WHERE compania = %s AND NOT EXISTS (SELECT 1 FROM companias_bloqueadas WHERE compania = %s)""",
+                        (nuevo, anterior, nuevo))
+            cur.execute("""UPDATE historial_activos h SET compania = %s WHERE compania = %s
+                           AND NOT EXISTS (SELECT 1 FROM historial_activos x
+                                           WHERE x.fecha = h.fecha AND x.fuente = h.fuente AND x.compania = %s)""",
+                        (nuevo, anterior, nuevo))
+        conn.commit()
+        return total
+    except Exception as e:
+        print(f"Error renombrando {anterior} -> {nuevo}: {e}")
+        return 0
+    finally:
+        conn.close()
 
 def parse_urls_txt(raw_text):
     items = []
@@ -1394,9 +1515,16 @@ HTML_TEMPLATE = """
             </div>
             <div class="modal-body p-4">
                 <ul class="nav nav-tabs mb-3" role="tablist">
+                    {% if usa_formulario_empresas %}
                     <li class="nav-item">
-                        <button class="nav-link active fw-semibold" data-bs-toggle="tab" data-bs-target="#urls-tab-meta" type="button">
-                            <i class="bi bi-meta"></i> Meta ({{ config_urls|length }})
+                        <button class="nav-link active fw-semibold" data-bs-toggle="tab" data-bs-target="#urls-tab-empresas" type="button">
+                            <i class="bi bi-buildings"></i> Empresas ({{ empresas_config|length }}) <span class="badge bg-warning text-dark">BETA</span>
+                        </button>
+                    </li>
+                    {% endif %}
+                    <li class="nav-item">
+                        <button class="nav-link {% if not usa_formulario_empresas %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#urls-tab-meta" type="button">
+                            <i class="bi bi-meta"></i> Meta ({{ config_urls|length }}){% if usa_formulario_empresas %} <span class="small text-muted fw-normal">avanzado</span>{% endif %}
                         </button>
                     </li>
                     <li class="nav-item">
@@ -1413,7 +1541,74 @@ HTML_TEMPLATE = """
                     {% endif %}
                 </ul>
                 <div class="tab-content">
-                <div class="tab-pane fade show active" id="urls-tab-meta">
+                {% if usa_formulario_empresas %}
+                <div class="tab-pane fade show active" id="urls-tab-empresas">
+                    <div id="empresasLista">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                            <span class="small text-muted">Empresas que vigilan los bots. Agrega o edita sin escribir el formato a mano.</span>
+                            <button type="button" class="btn btn-sm btn-primary" id="empresaNueva"><i class="bi bi-plus-lg"></i> Agregar empresa</button>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover align-middle mb-0">
+                                <thead class="table-light"><tr class="small text-muted"><th>Empresa</th><th>Meta</th><th>Google</th><th class="text-end">Acciones</th></tr></thead>
+                                <tbody>
+                                    {% for e in empresas_config %}
+                                    <tr>
+                                        <td class="fw-semibold">{{ e.nombre }}</td>
+                                        <td class="small">
+                                            {% for m in e.meta %}<a href="{{ m.url }}" target="_blank" rel="noopener" class="badge text-decoration-none {{ 'bg-success-subtle text-success-emphasis' if m.tipo == 'pagina' else 'bg-warning-subtle text-warning-emphasis' }} me-1" title="{{ m.url }}">{{ 'Página' if m.tipo == 'pagina' else 'Búsqueda: ' ~ m.bot }}</a>{% else %}<span class="text-muted">—</span>{% endfor %}
+                                        </td>
+                                        <td class="small">{% for g in e.google %}<span class="badge bg-info-subtle text-info-emphasis me-1">{{ g }}</span>{% else %}<span class="text-muted">—</span>{% endfor %}</td>
+                                        <td class="text-end text-nowrap">
+                                            <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2 empresa-editar" data-indice="{{ loop.index0 }}" title="Editar"><i class="bi bi-pencil"></i></button>
+                                            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 empresa-eliminar" data-nombre="{{ e.nombre }}" title="Dejar de monitorear"><i class="bi bi-trash3"></i></button>
+                                        </td>
+                                    </tr>
+                                    {% else %}
+                                    <tr><td colspan="4" class="text-center text-muted py-4 small">Todavía no hay empresas configuradas.</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        <p class="small text-muted mt-2 mb-0"><span class="badge bg-success-subtle text-success-emphasis">Página</span> = búsqueda por página del anunciante (la más precisa). <span class="badge bg-warning-subtle text-warning-emphasis">Búsqueda</span> = por palabra clave (puede traer anuncios de otros).</p>
+                    </div>
+
+                    <form id="empresaFormulario" class="d-none" autocomplete="off">
+                        <h6 class="fw-bold mb-3" id="empresaTitulo">Agregar empresa</h6>
+                        <div class="mb-3">
+                            <label class="form-label small fw-semibold" for="empresaNombre">Nombre en el panel</label>
+                            <input type="text" class="form-control form-control-sm" id="empresaNombre" maxlength="60" placeholder="Ej.: Fina" required>
+                            <div class="form-text">Así aparecerá en el dashboard. Úsalo igual en Meta y Google para que se agrupen.</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label small fw-semibold"><i class="bi bi-meta"></i> Páginas de Meta (Facebook / Instagram)</label>
+                            <div id="empresaMeta" class="d-flex flex-column gap-2"></div>
+                            <button type="button" class="btn btn-link btn-sm px-0" id="empresaMasMeta"><i class="bi bi-plus"></i> Agregar otra página</button>
+                            <details class="small text-muted">
+                                <summary>¿Cómo consigo el enlace de la página?</summary>
+                                <ol class="mb-0 mt-1 ps-3">
+                                    <li>Abre la <a href="https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=VE&media_type=all" target="_blank" rel="noopener">Biblioteca de Anuncios de Meta</a>.</li>
+                                    <li>Escribe el nombre de la empresa y elígela en la lista (con su logo), no la búsqueda por palabra.</li>
+                                    <li>Copia el enlace de la barra del navegador (debe tener <code>view_all_page_id</code>) y pégalo aquí.</li>
+                                </ol>
+                                <div class="mt-1">Si no tiene página, escribe solo el nombre y se buscará por palabra clave.</div>
+                            </details>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label small fw-semibold"><i class="bi bi-google"></i> Sitios web para Google</label>
+                            <div id="empresaGoogle" class="d-flex flex-column gap-2"></div>
+                            <button type="button" class="btn btn-link btn-sm px-0" id="empresaMasGoogle"><i class="bi bi-plus"></i> Agregar otro sitio</button>
+                            <div class="form-text">Pega la dirección de su web (sirve cualquier página del sitio); se guarda solo el dominio, por ejemplo <code>galac.com</code>.</div>
+                        </div>
+                        <div class="alert alert-danger small py-2 d-none" id="empresaError"></div>
+                        <div class="d-flex justify-content-end gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="empresaCancelar">Cancelar</button>
+                            <button type="submit" class="btn btn-sm btn-primary" id="empresaGuardar"><i class="bi bi-cloud-arrow-up"></i> Guardar</button>
+                        </div>
+                    </form>
+                </div>
+                {% endif %}
+                <div class="tab-pane fade{% if not usa_formulario_empresas %} show active{% endif %}" id="urls-tab-meta">
                 <form action="/guardar_urls_txt" method="POST">
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <span class="small text-muted">Formato: <code>Nombre en Panel | Nombre Búsqueda Bot | URL</code><br>Recomendado: URL de la página del anunciante (con <code>view_all_page_id</code>), así los anuncios retirados se detectan con precisión.</span>
@@ -2734,6 +2929,104 @@ HTML_TEMPLATE = """
             },
         });
     }
+    {% if usa_formulario_empresas %}
+    // Formulario de empresas: arma las líneas de urls.txt / urls_google.txt en el servidor.
+    (function formularioEmpresas() {
+        const empresas = {{ empresas_config|tojson }};
+        const lista = document.getElementById('empresasLista');
+        const form = document.getElementById('empresaFormulario');
+        if (!form) return;
+        const cajaMeta = document.getElementById('empresaMeta');
+        const cajaGoogle = document.getElementById('empresaGoogle');
+        const error = document.getElementById('empresaError');
+        let original = null;
+
+        function pista(input, nota) {
+            // Indica al momento qué se detectó en lo que se pegó (el servidor valida igual al guardar).
+            const v = input.value.trim();
+            if (input.dataset.tipo === 'meta') {
+                if (!v) { nota.textContent = ''; return; }
+                const pagina = v.match(/view_all_page_id=(\\d+)/);
+                if (pagina) { nota.className = 'form-text text-success'; nota.textContent = `✓ Página de Meta detectada (ID ${pagina[1]})`; }
+                else if (/facebook\\.com/i.test(v) && /[?&]q=/.test(v)) { nota.className = 'form-text text-warning'; nota.textContent = 'Búsqueda por palabra clave (menos precisa que la página)'; }
+                else if (/facebook\\.com|^https?:/i.test(v)) { nota.className = 'form-text text-danger'; nota.textContent = '⚠ No se ve la página en el enlace; mira "¿Cómo consigo el enlace?"'; }
+                else { nota.className = 'form-text text-warning'; nota.textContent = `Se buscará por palabra clave: "${v}"`; }
+            } else {
+                const host = v.replace(/^[a-z]+:\\/\\//i, '').split(/[\\/?#]/)[0].replace(/^www\\./i, '').toLowerCase();
+                nota.className = 'form-text ' + (/^([a-z0-9-]+\\.)+[a-z]{2,}$/.test(host) ? 'text-success' : 'text-danger');
+                nota.textContent = v ? (/^([a-z0-9-]+\\.)+[a-z]{2,}$/.test(host) ? `✓ Se guardará como ${host}` : '⚠ No parece un sitio web válido') : '';
+            }
+        }
+        function agregarCampo(caja, tipo, valor) {
+            const fila = document.createElement('div');
+            const grupo = document.createElement('div');
+            grupo.className = 'input-group input-group-sm';
+            const input = document.createElement('input');
+            input.type = 'text'; input.className = 'form-control'; input.dataset.tipo = tipo; input.value = valor || '';
+            input.placeholder = tipo === 'meta' ? 'Pega el enlace de su página en la Biblioteca de Anuncios, o escribe el nombre' : 'Ej.: https://www.empresa.com';
+            const quitar = document.createElement('button');
+            quitar.type = 'button'; quitar.className = 'btn btn-outline-secondary'; quitar.title = 'Quitar'; quitar.innerHTML = '<i class="bi bi-x-lg"></i>';
+            const nota = document.createElement('div');
+            nota.className = 'form-text';
+            input.addEventListener('input', () => pista(input, nota));
+            quitar.addEventListener('click', () => { fila.remove(); if (!caja.children.length) agregarCampo(caja, tipo); });
+            grupo.append(input, quitar);
+            fila.append(grupo, nota);
+            caja.appendChild(fila);
+            pista(input, nota);
+            return input;
+        }
+        function abrir(empresa) {
+            original = empresa ? empresa.nombre : null;
+            document.getElementById('empresaTitulo').textContent = empresa ? `Editar "${empresa.nombre}"` : 'Agregar empresa';
+            document.getElementById('empresaNombre').value = empresa ? empresa.nombre : '';
+            cajaMeta.innerHTML = ''; cajaGoogle.innerHTML = '';
+            (empresa && empresa.meta.length ? empresa.meta.map(m => m.url) : ['']).forEach(v => agregarCampo(cajaMeta, 'meta', v));
+            (empresa && empresa.google.length ? empresa.google : ['']).forEach(v => agregarCampo(cajaGoogle, 'google', v));
+            error.classList.add('d-none');
+            lista.classList.add('d-none'); form.classList.remove('d-none');
+            document.getElementById('empresaNombre').focus();
+        }
+        function cerrar() { form.classList.add('d-none'); lista.classList.remove('d-none'); }
+        async function enviar(ruta, cuerpo, boton) {
+            const textoBoton = boton.innerHTML;
+            boton.disabled = true;
+            boton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Guardando…';
+            try {
+                const r = await fetch(ruta, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) });
+                const datos = await r.json().catch(() => ({ ok: false, error: `Error ${r.status}` }));
+                if (!datos.ok) throw new Error(datos.error || 'No se pudo guardar.');
+                window.location.href = '/?msg=' + encodeURIComponent(datos.mensaje);
+            } catch (e) {
+                boton.disabled = false; boton.innerHTML = textoBoton;
+                return e.message;
+            }
+            return null;
+        }
+
+        document.getElementById('empresaNueva').addEventListener('click', () => abrir(null));
+        document.getElementById('empresaCancelar').addEventListener('click', cerrar);
+        document.getElementById('empresaMasMeta').addEventListener('click', () => agregarCampo(cajaMeta, 'meta').focus());
+        document.getElementById('empresaMasGoogle').addEventListener('click', () => agregarCampo(cajaGoogle, 'google').focus());
+        document.querySelectorAll('.empresa-editar').forEach(b => b.addEventListener('click', () => abrir(empresas[+b.dataset.indice])));
+        document.querySelectorAll('.empresa-eliminar').forEach(b => b.addEventListener('click', async () => {
+            if (!confirm(`¿Dejar de monitorear "${b.dataset.nombre}"? Sus anuncios guardados se conservan.`)) return;
+            const fallo = await enviar('/empresas/eliminar', { nombre: b.dataset.nombre }, b);
+            if (fallo) alert(fallo);
+        }));
+        form.addEventListener('submit', async ev => {
+            ev.preventDefault();
+            error.classList.add('d-none');
+            const valores = caja => [...caja.querySelectorAll('input')].map(i => i.value.trim()).filter(Boolean);
+            const fallo = await enviar('/empresas/guardar', {
+                nombre: document.getElementById('empresaNombre').value, nombre_original: original,
+                meta: valores(cajaMeta), google: valores(cajaGoogle),
+            }, document.getElementById('empresaGuardar'));
+            if (fallo) { error.textContent = fallo; error.classList.remove('d-none'); }
+        });
+    })();
+    {% endif %}
+
     {% if es_beta %}
     // Comparar compañías: la selección vive en la URL (?comparar=A&comparar=B) para poder compartirla.
     (function compararCompanias() {
@@ -3882,6 +4175,7 @@ def index():
         format_data=format_data,
         stats_empresas=stats_empresas,
         stats_empresas_vigentes=stats_empresas_vigentes,
+        empresas_config=empresas_configuradas(raw_urls_content, raw_google_content) if usuario_actual() in USUARIOS_FORMULARIO_EMPRESAS else [],
         historial_data=historial_data,
         comparativa=comparativa,
         destinos_data=destinos_data,
@@ -3889,6 +4183,109 @@ def index():
         alerta_salud=alerta_salud,
         msg=msg
     )
+
+def formulario_empresas_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return {'ok': False, 'error': 'Tu sesión expiró; vuelve a iniciar sesión.'}, 401
+        if usuario_actual() not in USUARIOS_FORMULARIO_EMPRESAS:
+            return {'ok': False, 'error': 'Tu usuario todavía no puede modificar las empresas.'}, 403
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/empresas/guardar', methods=['POST'])
+@formulario_empresas_required
+def guardar_empresa():
+    datos = request.get_json(silent=True) or {}
+    nombre = re.sub(r'\s+', ' ', str(datos.get('nombre') or '')).strip()
+    original = (str(datos.get('nombre_original')).strip() or None) if datos.get('nombre_original') else None
+    if not nombre:
+        return {'ok': False, 'error': 'Escribe el nombre de la empresa.'}, 400
+    if '|' in nombre or len(nombre) > 60:
+        return {'ok': False, 'error': 'El nombre no puede tener "|" ni más de 60 caracteres.'}, 400
+
+    raw_meta, _ = get_github_urls_file(URLS_FILE_PATH)
+    raw_google, _ = get_github_urls_file(URLS_GOOGLE_FILE_PATH)
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return {'ok': False, 'error': 'Falta configurar GITHUB_TOKEN o GITHUB_REPO.'}, 500
+    actuales = {e['nombre']: e for e in empresas_configuradas(raw_meta, raw_google)}
+    if nombre in actuales and nombre != original:
+        return {'ok': False, 'error': f'Ya existe una empresa llamada "{nombre}". Edítala en vez de crear otra.'}, 400
+    if original and original not in actuales:
+        return {'ok': False, 'error': f'"{original}" ya no existe; recarga la página.'}, 409
+
+    previas = {m['url']: m for m in (actuales.get(original) or {}).get('meta', [])}
+    lineas_meta, paginas, errores = [], set(), []
+    for texto in datos.get('meta') or []:
+        texto = str(texto).strip()
+        if not texto:
+            continue
+        if texto in previas:  # sin cambios: se conserva tal cual, con su nombre de búsqueda (p. ej. "Saul Casanova")
+            entrada = previas[texto]
+            bot = entrada['bot']
+        else:
+            entrada, error = normalizar_entrada_meta(texto, nombre)
+            if error:
+                errores.append(error)
+                continue
+            bot = nombre if entrada['tipo'] == 'pagina' else entrada['bot']
+        tipo, pagina = tipo_entrada_meta(entrada['url'])
+        if pagina:
+            if pagina in paginas:
+                continue
+            paginas.add(pagina)
+            for otra in actuales.values():
+                if otra['nombre'] != original and any(m.get('id') == pagina for m in otra['meta']):
+                    errores.append(f'Esa página de Meta ya está registrada en "{otra["nombre"]}".')
+        lineas_meta.append(f"{nombre} | {bot} | {entrada['url']}")
+    lineas_google, dominios = [], set()
+    for texto in datos.get('google') or []:
+        dominio, error = normalizar_dominio(str(texto))
+        if error:
+            errores.append(error)
+        elif dominio and dominio not in dominios:
+            dominios.add(dominio)
+            lineas_google.append(f"{nombre} | {dominio}")
+    if errores:
+        return {'ok': False, 'error': ' '.join(dict.fromkeys(errores))}, 400
+    if not lineas_meta and not lineas_google:
+        return {'ok': False, 'error': 'Agrega al menos una página de Meta o un sitio web para Google.'}, 400
+
+    nuevo_meta = reemplazar_lineas_empresa(raw_meta, original, lineas_meta)
+    nuevo_google = reemplazar_lineas_empresa(raw_google, original, lineas_google)
+    for contenido, anterior, ruta in ((nuevo_meta, raw_meta, URLS_FILE_PATH), (nuevo_google, raw_google, URLS_GOOGLE_FILE_PATH)):
+        if contenido != anterior:
+            ok, mensaje = update_github_urls_file(contenido, ruta)
+            if not ok:
+                return {'ok': False, 'error': mensaje}, 502
+    renombrados = renombrar_empresa_en_bd(original, nombre) if original and original != nombre else 0
+    texto = f'✅ Empresa "{nombre}" {"actualizada" if original else "agregada"}. Los bots la buscarán desde su próxima corrida.'
+    if renombrados:
+        texto += f' Se renombraron {renombrados} anuncios ya guardados.'
+    return {'ok': True, 'mensaje': texto}
+
+@app.route('/empresas/eliminar', methods=['POST'])
+@formulario_empresas_required
+def eliminar_empresa():
+    nombre = str((request.get_json(silent=True) or {}).get('nombre') or '').strip()
+    if not nombre:
+        return {'ok': False, 'error': 'Falta el nombre de la empresa.'}, 400
+    raw_meta, _ = get_github_urls_file(URLS_FILE_PATH)
+    raw_google, _ = get_github_urls_file(URLS_GOOGLE_FILE_PATH)
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return {'ok': False, 'error': 'Falta configurar GITHUB_TOKEN o GITHUB_REPO.'}, 500
+    cambios = 0
+    for anterior, ruta in ((raw_meta, URLS_FILE_PATH), (raw_google, URLS_GOOGLE_FILE_PATH)):
+        nuevo = reemplazar_lineas_empresa(anterior, nombre, [])
+        if nuevo != anterior:
+            ok, mensaje = update_github_urls_file(nuevo, ruta)
+            if not ok:
+                return {'ok': False, 'error': mensaje}, 502
+            cambios += 1
+    if not cambios:
+        return {'ok': False, 'error': f'"{nombre}" no está en la configuración.'}, 404
+    return {'ok': True, 'mensaje': f'🗑️ "{nombre}" ya no se monitoreará. Sus anuncios guardados se conservan en el historial.'}
 
 @app.route('/guardar_urls_txt', methods=['POST'])
 @editor_urls_required
