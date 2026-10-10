@@ -7,12 +7,13 @@ import unicodedata
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import Counter
 from functools import wraps
 import pandas as pd
 from dotenv import load_dotenv
 from flask import Flask, render_template_string, request, redirect, url_for, send_file, session
+from markupsafe import Markup
 
 load_dotenv()
 
@@ -38,6 +39,24 @@ USUARIO_ADMIN = 'administrador'
 # Las funciones nuevas se muestran primero solo a este usuario (con {% if es_beta %} en las
 # plantillas); al liberarlas para todos se quita esa condición.
 USUARIO_BETA = 'funciones_beta'
+
+# Funciones ya liberadas para los demás usuarios: clave -> fecha de liberación (AAAA-MM-DD, hora de
+# Venezuela). En la plantilla se marcan con {{ nuevo('clave') }}, que muestra una etiqueta "NEW"
+# durante DIAS_ETIQUETA_NUEVO días. Funciones Beta no la ve: allí ya tiene la etiqueta BETA.
+DIAS_ETIQUETA_NUEVO = 10
+FUNCIONES_NUEVAS = {
+    'cambiar_usuario': '2026-10-10',
+}
+
+def hoy_venezuela():
+    return (datetime.now(timezone.utc) - timedelta(hours=4)).date()
+
+def es_funcion_nueva(clave):
+    try:
+        liberada = datetime.strptime(FUNCIONES_NUEVAS[clave], '%Y-%m-%d').date()
+    except (KeyError, ValueError):
+        return False
+    return 0 <= (hoy_venezuela() - liberada).days < DIAS_ETIQUETA_NUEVO
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -127,6 +146,8 @@ def inyectar_usuario():
         'es_admin': clave == USUARIO_ADMIN,
         'es_beta': clave == USUARIO_BETA,
         'puede_editar_urls': clave in USUARIOS_EDITAN_URLS,
+        'nuevo': lambda funcion: Markup('<span class="badge-nuevo" title="Función nueva">NEW</span>')
+                 if clave != USUARIO_BETA and es_funcion_nueva(funcion) else '',
         'puede_cambiar_usuario': puede_cambiar_usuario(),
         'usuario_origen_nombre': USUARIOS.get(usuario_origen(), {}).get('nombre', usuario_origen()),
         'cambio_pide_password': {u: cambio_requiere_password(u) for u in USUARIOS},
@@ -778,6 +799,14 @@ HTML_TEMPLATE = """
         .diseno-v2.filtro-recargado .card-filter-container,
         .diseno-v2.filtro-recargado .nav-tabs { animation: none; }
         .diseno-v2 .tab-content { transition: opacity .2s ease; }
+        .badge-nuevo {
+            display: inline-block; margin-left: .35rem; padding: .12rem .42rem; border-radius: 999px;
+            font-size: .6rem; font-weight: 700; letter-spacing: .04em; line-height: 1.3; vertical-align: middle;
+            color: #fff; background: linear-gradient(135deg, #10b981, #059669);
+            box-shadow: 0 0 0 0 rgba(16, 185, 129, .5); animation: brillo-nuevo 2.4s ease-out infinite;
+        }
+        @keyframes brillo-nuevo { 0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, .5); } 70%, 100% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); } }
+        @media (prefers-reduced-motion: reduce) { .badge-nuevo { animation: none; } }
         .texto-completo { cursor: help; text-decoration: underline dotted rgba(127, 127, 127, .5); text-underline-offset: 3px; }
         /* Texto completo del anuncio: mismo fondo, borde y letra que las tarjetas, en modo claro y oscuro */
         .tooltip.tooltip-texto {
@@ -862,7 +891,7 @@ HTML_TEMPLATE = """
                     {% if puede_cambiar_usuario %}
                     <li>
                         <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-bs-toggle="modal" data-bs-target="#modalCambiarUsuario">
-                            <i class="bi bi-people"></i> Cambiar de Usuario
+                            <i class="bi bi-people"></i> Cambiar de Usuario {{ nuevo('cambiar_usuario') }}
                         </button>
                     </li>
                     {% endif %}
@@ -1224,12 +1253,17 @@ HTML_TEMPLATE = """
                     </button>
                     <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow-lg">
                         <div class="form-check pb-1 mb-1 border-bottom">
-                            <input class="form-check-input" type="checkbox" id="selectAllCompanies" onchange="toggleAllCompanies(this)" {% if todas_companias %}checked{% endif %}>
+                            {% if es_beta %}
+                            <input class="form-check-input" type="checkbox" id="selectAllCompanies" {% if not companias_sel or todas_companias %}checked{% endif %}>
+                            <label class="form-check-label small fw-bold" for="selectAllCompanies">Todas</label>
+                            {% else %}
+                            <input class="form-check-input" type="checkbox" id="selectAllCompanies" onchange="toggleAllCompanies(this)">
                             <label class="form-check-label small fw-bold" for="selectAllCompanies">Seleccionar Todo</label>
+                            {% endif %}
                         </div>
                         {% for comp in lista_companias %}
                         <div class="form-check">
-                            <input class="form-check-input comp-checkbox" type="checkbox" name="compania" value="{{ comp }}" id="comp_{{ loop.index }}" {% if comp in companias_sel %}checked{% endif %}>
+                            <input class="form-check-input comp-checkbox" type="checkbox" name="compania" value="{{ comp }}" id="comp_{{ loop.index }}" {% if comp in companias_sel and not todas_companias %}checked{% endif %}>
                             <label class="form-check-label small" for="comp_{{ loop.index }}">{{ comp }}</label>
                         </div>
                         {% endfor %}
@@ -1327,12 +1361,12 @@ HTML_TEMPLATE = """
                     </button>
                     <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow-lg" style="min-width: 240px;">
                         <div class="form-check pb-1 mb-1 border-bottom">
-                            <input class="form-check-input" type="checkbox" id="selectAllProductos" onchange="document.querySelectorAll('.prod-checkbox').forEach(cb => cb.checked = this.checked)" {% if todos_productos %}checked{% endif %}>
-                            <label class="form-check-label small fw-bold" for="selectAllProductos">Seleccionar Todo</label>
+                            <input class="form-check-input" type="checkbox" id="selectAllProductos" {% if not productos_sel or todos_productos %}checked{% endif %}>
+                            <label class="form-check-label small fw-bold" for="selectAllProductos">Todos</label>
                         </div>
                         {% for p in lista_productos %}
                         <div class="form-check">
-                            <input class="form-check-input prod-checkbox" type="checkbox" name="producto" value="{{ p }}" id="prod_{{ loop.index }}" {% if p in productos_sel %}checked{% endif %}>
+                            <input class="form-check-input prod-checkbox" type="checkbox" name="producto" value="{{ p }}" id="prod_{{ loop.index }}" {% if p in productos_sel and not todos_productos %}checked{% endif %}>
                             <label class="form-check-label small" for="prod_{{ loop.index }}">{{ p }}</label>
                         </div>
                         {% endfor %}
@@ -1417,7 +1451,7 @@ HTML_TEMPLATE = """
                             <div class="d-flex flex-wrap gap-2">
                                 <div class="btn-group btn-group-sm" role="group" id="timelineModoFilter">
                                     <button type="button" class="btn btn-primary active" onclick="setTimelineModo('historico', this)">{{ 'Todos' if es_beta else 'Históricos' }}</button>
-                                    <button type="button" class="btn btn-outline-secondary" onclick="setTimelineModo('actual', this)" title="Anuncios que siguen publicados en Meta o Google">{{ 'Vigentes' if es_beta else 'Actuales' }}</button>
+                                    <button type="button" class="btn btn-outline-secondary" onclick="setTimelineModo('actual', this)" title="Anuncios que siguen {{ 'activos' if es_beta else 'publicados' }} en Meta o Google">{{ 'Vigentes' if es_beta else 'Actuales' }}</button>
                                 </div>
                                 <div class="btn-group btn-group-sm" role="group" id="timeRangeFilter">
                                     <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(7, this)">7D</button>
@@ -2252,12 +2286,18 @@ HTML_TEMPLATE = """
             });
         });
 
+        // "Todas"/"Todos" equivale a no filtrar: al marcarla se desmarcan las opciones, y queda
+        // marcada sola cuando no hay ninguna opción elegida (no se puede quedar en "ninguna").
         [['#selectAllCompanies', '.comp-checkbox'], ['#selectAllProductos', '.prod-checkbox']].forEach(([todo, cada]) => {
             const maestra = document.querySelector(todo);
-            const casillas = document.querySelectorAll(cada);
+            const casillas = [...document.querySelectorAll(cada)];
             if (!maestra) return;
+            maestra.addEventListener('change', () => {
+                if (maestra.checked) casillas.forEach(c => { c.checked = false; });
+                else if (!casillas.some(c => c.checked)) maestra.checked = true;
+            });
             casillas.forEach(cb => cb.addEventListener('change', () => {
-                maestra.checked = [...casillas].every(c => c.checked);
+                maestra.checked = !casillas.some(c => c.checked);
             }));
         });
 
