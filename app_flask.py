@@ -189,6 +189,21 @@ def registrar_acceso(usuario):
     finally:
         conn.close()
 
+# Nombres del panel antes -> después del cambio a nombres cortos (10-oct-2026). Solo lo usa la
+# migración de una sola vez de init_config_tables.
+RENOMBRES_PANEL_2026_10 = {
+    'SAINT CASA DE SOFTWARE': 'SAINT',
+    'MiProfit de Softech Consultores': 'Profit',
+    'A2Venezuela': 'A2',
+    'PSKloud by Premium Soft': 'Premium Soft',
+    'Valery Software Empresarial': 'Valery',
+    'Fina Partner': 'Fina',
+    'SOFI - Sistema administrativo con IA': 'SOFI',
+    'Soluciones Lopnet, C.A.': 'Lopnet',
+    'Gálac Software': 'Gálac',
+    'Saul Casanova': 'Lealty Group',
+}
+
 def init_config_tables():
     conn = get_db_connection()
     if conn:
@@ -219,6 +234,23 @@ def init_config_tables():
                 if cur.fetchone():
                     cur.execute("UPDATE anuncios SET presente_en_meta = TRUE WHERE COALESCE(fuente, 'Meta') = 'Meta';")
                     print(f"Migración aplicada: {cur.rowcount} anuncios de Meta restablecidos como presentes.")
+                # Una sola vez: el panel pasó a nombres cortos (urls.txt, 10-oct-2026) y la página de
+                # Saul Casanova se muestra como Lealty Group; se renombran los anuncios ya guardados y
+                # las compañías bloqueadas para que ninguna empresa quede partida en dos.
+                cur.execute("""
+                    INSERT INTO migraciones (nombre) VALUES ('nombres_cortos_panel_2026_10')
+                    ON CONFLICT DO NOTHING RETURNING nombre;
+                """)
+                if cur.fetchone():
+                    renombrados = 0
+                    for anterior, nuevo in RENOMBRES_PANEL_2026_10.items():
+                        cur.execute("UPDATE anuncios SET compania = %s WHERE compania = %s;", (nuevo, anterior))
+                        renombrados += cur.rowcount
+                        cur.execute("""
+                            UPDATE companias_bloqueadas SET compania = %s
+                            WHERE compania = %s AND NOT EXISTS (SELECT 1 FROM companias_bloqueadas WHERE compania = %s);
+                        """, (nuevo, anterior, nuevo))
+                    print(f"Migración aplicada: {renombrados} anuncios pasan a los nombres cortos del panel.")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS accesos_dashboard (
                         id SERIAL PRIMARY KEY,
