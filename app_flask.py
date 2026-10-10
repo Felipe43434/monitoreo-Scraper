@@ -49,6 +49,10 @@ USUARIO_BETA = 'funciones_beta'
 DIAS_ETIQUETA_NUEVO = 10
 FUNCIONES_NUEVAS = {
     'cambiar_usuario': '2026-10-10',
+    'filtro_producto': '2026-10-10',
+    'editor_productos': '2026-10-10',
+    'miniaturas': '2026-10-10',
+    'texto_completo': '2026-10-10',
 }
 
 def hoy_venezuela():
@@ -731,6 +735,40 @@ def renombrar_empresa_en_bd(anterior, nuevo):
     finally:
         conn.close()
 
+# ---------- Editor simplificado de productos: todos los usuarios (pedido del 10-oct-2026) ----------
+def categorias_productos(raw_text):
+    # [{'nombre': 'Facturación', 'palabras': ['factur*', ...]}] en el orden del archivo.
+    categorias = []
+    for linea in (raw_text or '').splitlines():
+        limpia = linea.strip()
+        if not limpia or limpia.startswith('#') or '|' not in limpia:
+            continue
+        nombre, claves = [x.strip() for x in limpia.split('|', 1)]
+        palabras = [c.strip() for c in claves.split(',') if c.strip()]
+        if nombre:
+            categorias.append({'nombre': nombre, 'palabras': palabras})
+    return categorias
+
+def limpiar_palabra_clave(texto):
+    t = re.sub(r'\s+', ' ', str(texto or '')).strip().lower()
+    if not t:
+        return None, None
+    if ',' in t or '|' in t:
+        return None, f'"{texto}" no puede tener comas ni "|"; agrega cada palabra por separado.'
+    if '*' in t[:-1]:
+        return None, f'En "{texto}" el * solo puede ir al final (ejemplo: factur*).'
+    if len(t.rstrip('*')) < 2:
+        return None, f'"{texto}" es muy corta; usa al menos 2 letras.'
+    return t, None
+
+def json_login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return {'ok': False, 'error': 'Tu sesión expiró; vuelve a iniciar sesión.'}, 401
+        return f(*args, **kwargs)
+    return decorated_function
+
 def parse_urls_txt(raw_text):
     items = []
     if not raw_text:
@@ -1280,7 +1318,11 @@ HTML_TEMPLATE = """
         <div class="d-flex align-items-center gap-2 ms-auto">
             
             <button class="btn btn-sm btn-outline-light d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalConfigUrls">
+                {% if puede_editar_urls or usa_formulario_empresas %}
                 <i class="bi bi-file-earmark-code fs-6"></i> URLs ({{ config_urls|length + config_google|length }})
+                {% else %}
+                <i class="bi bi-box-seam fs-6"></i> Productos ({{ categorias_config|length }}) {{ nuevo('editor_productos') }}
+                {% endif %}
             </button>
 
             <button class="btn btn-sm btn-outline-danger d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalBlockedCompanies">
@@ -1409,7 +1451,6 @@ HTML_TEMPLATE = """
 </script>
 {% endif %}
 
-{% if es_beta %}
 <!-- Modal: imagen completa de la vista previa de un anuncio -->
 <div class="modal fade" id="modalVistaPrevia" tabindex="-1" aria-labelledby="vistaPreviaTitulo">
     <div class="modal-dialog modal-lg modal-dialog-centered">
@@ -1430,7 +1471,6 @@ HTML_TEMPLATE = """
         </div>
     </div>
 </div>
-{% endif %}
 
 {% if es_beta %}
 <!-- Modal: Comparar compañías (Beta). Las compañías se eligen dentro de la ventana. -->
@@ -1510,10 +1550,11 @@ HTML_TEMPLATE = """
     <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content card-custom">
             <div class="modal-header border-secondary border-opacity-25">
-                <h5 class="modal-title fw-bold"><i class="bi bi-file-earmark-text text-primary"></i> Editor de URLs (GitHub)</h5>
+                <h5 class="modal-title fw-bold"><i class="bi bi-file-earmark-text text-primary"></i> {{ 'Editor de URLs (GitHub)' if puede_editar_urls or usa_formulario_empresas else 'Categorías de producto' }}</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body p-4">
+                {% set pestana_config = 'empresas' if usa_formulario_empresas else ('meta' if puede_editar_urls else 'categorias') %}
                 <ul class="nav nav-tabs mb-3" role="tablist">
                     {% if usa_formulario_empresas %}
                     <li class="nav-item">
@@ -1523,7 +1564,13 @@ HTML_TEMPLATE = """
                     </li>
                     {% endif %}
                     <li class="nav-item">
-                        <button class="nav-link {% if not usa_formulario_empresas %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#urls-tab-meta" type="button">
+                        <button class="nav-link {% if pestana_config == 'categorias' %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#urls-tab-categorias" type="button">
+                            <i class="bi bi-box-seam"></i> Productos ({{ categorias_config|length }})
+                        </button>
+                    </li>
+                    {% if puede_editar_urls %}
+                    <li class="nav-item">
+                        <button class="nav-link {% if pestana_config == 'meta' %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#urls-tab-meta" type="button">
                             <i class="bi bi-meta"></i> Meta ({{ config_urls|length }}){% if usa_formulario_empresas %} <span class="small text-muted fw-normal">avanzado</span>{% endif %}
                         </button>
                     </li>
@@ -1532,10 +1579,11 @@ HTML_TEMPLATE = """
                             <i class="bi bi-google"></i> Google ({{ config_google|length }})
                         </button>
                     </li>
-                    {% if es_admin or es_beta %}
+                    {% endif %}
+                    {% if puede_editar_urls %}
                     <li class="nav-item">
                         <button class="nav-link fw-semibold" data-bs-toggle="tab" data-bs-target="#urls-tab-productos" type="button">
-                            <i class="bi bi-box-seam"></i> Productos ({{ lista_productos|length - 1 }}) <span class="badge bg-warning text-dark">BETA</span>
+                            <i class="bi bi-code-square"></i> Productos <span class="small text-muted fw-normal">avanzado</span>
                         </button>
                     </li>
                     {% endif %}
@@ -1608,7 +1656,65 @@ HTML_TEMPLATE = """
                     </form>
                 </div>
                 {% endif %}
-                <div class="tab-pane fade{% if not usa_formulario_empresas %} show active{% endif %}" id="urls-tab-meta">
+                <div class="tab-pane fade{% if pestana_config == 'categorias' %} show active{% endif %}" id="urls-tab-categorias">
+                    <div id="categoriasLista">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                            <span class="small text-muted">Cada anuncio se clasifica por las palabras de su texto (sin importar mayúsculas ni tildes).</span>
+                            <button type="button" class="btn btn-sm btn-primary" id="categoriaNueva"><i class="bi bi-plus-lg"></i> Agregar categoría</button>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover align-middle mb-0">
+                                <thead class="table-light"><tr class="small text-muted"><th>Categoría</th><th>Palabras clave</th><th class="text-end">Acciones</th></tr></thead>
+                                <tbody>
+                                    {% for c in categorias_config %}
+                                    <tr>
+                                        <td class="fw-semibold text-nowrap">{{ c.nombre }}</td>
+                                        <td class="small">
+                                            {% for w in c.palabras[:8] %}<span class="badge bg-primary-subtle text-primary-emphasis me-1 mb-1">{{ w }}</span>{% endfor %}
+                                            {% if c.palabras|length > 8 %}<span class="text-muted">+{{ c.palabras|length - 8 }} más</span>{% endif %}
+                                        </td>
+                                        <td class="text-end text-nowrap">
+                                            <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2 categoria-editar" data-indice="{{ loop.index0 }}" title="Editar"><i class="bi bi-pencil"></i></button>
+                                            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 categoria-eliminar" data-nombre="{{ c.nombre }}" title="Eliminar"><i class="bi bi-trash3"></i></button>
+                                        </td>
+                                    </tr>
+                                    {% else %}
+                                    <tr><td colspan="3" class="text-center text-muted py-4 small">Todavía no hay categorías.</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <form id="categoriaFormulario" class="d-none" autocomplete="off">
+                        <h6 class="fw-bold mb-3" id="categoriaTitulo">Agregar categoría</h6>
+                        <div class="mb-3">
+                            <label class="form-label small fw-semibold" for="categoriaNombre">Nombre de la categoría</label>
+                            <input type="text" class="form-control form-control-sm" id="categoriaNombre" maxlength="60" placeholder="Ej.: Facturación" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label small fw-semibold" for="categoriaPalabra">Palabras clave</label>
+                            <div class="form-control form-control-sm d-flex flex-wrap gap-1 align-items-center" id="categoriaChips">
+                                <input type="text" class="border-0 flex-grow-1 bg-transparent" style="outline: none; min-width: 160px;" id="categoriaPalabra" placeholder="Escribe una palabra y pulsa Enter o coma">
+                            </div>
+                            <div class="form-text">Pon <code>*</code> al final para incluir variantes: <code>factur*</code> = factura, facturas, facturación, facturar. Sin <code>*</code> se busca la palabra exacta.</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label small fw-semibold" for="categoriaPrueba">Probar con un texto <span class="fw-normal text-muted">(opcional)</span></label>
+                            <input type="text" class="form-control form-control-sm" id="categoriaPrueba" placeholder="Pega el texto de un anuncio para ver si entraría en esta categoría">
+                            <div class="form-text" id="categoriaResultado"></div>
+                        </div>
+                        <div class="alert alert-danger small py-2 d-none" id="categoriaError"></div>
+                        <div class="d-flex justify-content-end gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="categoriaCancelar">Cancelar</button>
+                            <button type="submit" class="btn btn-sm btn-primary" id="categoriaGuardar"><i class="bi bi-cloud-arrow-up"></i> Guardar</button>
+                        </div>
+                    </form>
+                </div>
+
+                {# Editores avanzados (texto): solo Administrador y Funciones Beta #}
+                {% if puede_editar_urls %}
+                <div class="tab-pane fade{% if pestana_config == 'meta' %} show active{% endif %}" id="urls-tab-meta">
                 <form action="/guardar_urls_txt" method="POST">
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <span class="small text-muted">Formato: <code>Nombre en Panel | Nombre Búsqueda Bot | URL</code><br>Recomendado: URL de la página del anunciante (con <code>view_all_page_id</code>), así los anuncios retirados se detectan con precisión.</span>
@@ -1658,7 +1764,6 @@ HTML_TEMPLATE = """
                 </div>
                 </div>
 
-                {% if es_admin or es_beta %}
                 <div class="tab-pane fade" id="urls-tab-productos">
                 <form action="/guardar_productos" method="POST">
                     <div class="d-flex justify-content-between align-items-center mb-2">
@@ -1677,7 +1782,6 @@ HTML_TEMPLATE = """
                     </div>
                 </form>
                 </div>
-                {% endif %}
 
                 <div class="tab-pane fade" id="urls-tab-google">
                 <form action="/guardar_urls_google" method="POST">
@@ -1729,6 +1833,7 @@ HTML_TEMPLATE = """
                     </table>
                 </div>
                 </div>
+                {% endif %}
                 </div>
             </div>
         </div>
@@ -1977,9 +2082,8 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
-            {% if es_beta %}
             <div class="col-6 col-md-3 col-lg-2">
-                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-box-seam"></i> Producto <span class="badge bg-warning text-dark">BETA</span></label>
+                <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-box-seam"></i> Producto {{ nuevo('filtro_producto') }}</label>
                 <div class="dropdown">
                     <button class="form-select form-select-sm text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
                         {% set todos_productos = lista_productos|reject('in', productos_sel)|list|length == 0 %}
@@ -1999,7 +2103,6 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
             </div>
-            {% endif %}
 
             <!-- 8. Botones de Acción -->
             <div class="col-12 {{ 'col-lg-auto' if es_beta else 'col-lg-2' }} d-flex gap-1">
@@ -2232,12 +2335,12 @@ HTML_TEMPLATE = """
                     <table class="table table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr class="small text-muted">
-                                {% if es_beta %}<th>Vista</th>{% endif %}
+                                <th>Vista {{ nuevo('miniaturas') }}</th>
                                 <th>Empresa</th>
                                 <th>Estado / Desempeño</th>
                                 <th>Plataformas</th>
                                 <th>Formato</th>
-                                <th>Copia / Texto</th>
+                                <th>Copia / Texto {{ nuevo('texto_completo') }}</th>
                                 <th>Tiempo Activo</th>
                                 <th>Fecha de Subida</th>
                                 <th>Acción</th>
@@ -2246,7 +2349,7 @@ HTML_TEMPLATE = """
                         <tbody>
                             {% for ad in anuncios %}
                             <tr>
-                                {% if es_beta %}{{ celda_miniatura(ad) }}{% endif %}
+                                {{ celda_miniatura(ad) }}
                                 <td>
                                     <div class="d-flex align-items-center gap-1">
                                         <span class="fw-bold">{{ ad.compania or 'N/A' }}</span>
@@ -2291,8 +2394,8 @@ HTML_TEMPLATE = """
                                 {% set largo_texto = 220 if es_beta else 120 %}
                                 <td class="small text-muted" style="{% if es_beta %}min-width: 320px; max-width: 440px;{% else %}max-width: 280px;{% endif %}">
                                     {% set texto_ad = ad.texto or ad.titulo or 'Sin descripción' %}
-                                    {% if es_beta and texto_ad|length > largo_texto %}<span class="texto-completo" data-bs-title="{{ texto_ad }}">{{ texto_ad[:largo_texto] }}...</span>{% else %}{{ texto_ad[:largo_texto] }}{% if (ad.texto or ad.titulo or '')|length > largo_texto %}...{% endif %}{% endif %}
-                                    {% if es_beta and ad.productos %}
+                                    {% if texto_ad|length > largo_texto %}<span class="texto-completo" data-bs-title="{{ texto_ad }}">{{ texto_ad[:largo_texto] }}...</span>{% else %}{{ texto_ad[:largo_texto] }}{% if (ad.texto or ad.titulo or '')|length > largo_texto %}...{% endif %}{% endif %}
+                                    {% if ad.productos %}
                                     <div class="mt-1 d-flex flex-wrap gap-1">
                                         {% for p in ad.productos %}{% if p in productos_sel %}<span class="badge bg-primary text-white shadow-sm" style="font-size: 0.65rem;" title="Producto filtrado"><i class="bi bi-check-circle-fill"></i> {{ p }}</span>{% else %}<span class="badge bg-primary-subtle text-primary-emphasis{% if productos_sel %} opacity-50{% endif %}" style="font-size: 0.65rem;"><i class="bi bi-box-seam"></i> {{ p }}</span>{% endif %}{% endfor %}
                                     </div>
@@ -2320,7 +2423,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="{{ 9 if es_beta else 8 }}" class="text-center py-5 text-muted">
+                                <td colspan="9" class="text-center py-5 text-muted">
                                     <i class="bi bi-folder-x fs-2 d-block mb-2"></i> No hay registros disponibles
                                 </td>
                             </tr>
@@ -2345,7 +2448,7 @@ HTML_TEMPLATE = """
                     <table class="table table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr class="small text-muted">
-                                {% if es_beta %}<th>Vista</th>{% endif %}
+                                <th>Vista</th>
                                 <th>Empresa</th>
                                 <th>Insignia</th>
                                 <th>Plataformas</th>
@@ -2359,7 +2462,7 @@ HTML_TEMPLATE = """
                         <tbody>
                             {% for ad in anuncios_winning %}
                             <tr>
-                                {% if es_beta %}{{ celda_miniatura(ad) }}{% endif %}
+                                {{ celda_miniatura(ad) }}
                                 <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
                                 <td><span class="badge badge-winning">🔥 Winning Ad</span></td>
                                 <td>{{ ad.plataformas_html|safe }}</td>
@@ -2390,7 +2493,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="{{ 9 if es_beta else 8 }}" class="text-center py-5 text-muted">
+                                <td colspan="9" class="text-center py-5 text-muted">
                                     <i class="bi bi-shield-check fs-2 d-block mb-2 text-warning"></i> No hay campañas activas con más de 30 días en los filtros seleccionados.
                                 </td>
                             </tr>
@@ -2415,7 +2518,7 @@ HTML_TEMPLATE = """
                     <table class="table table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr class="small text-muted">
-                                {% if es_beta %}<th>Vista</th>{% endif %}
+                                <th>Vista</th>
                                 <th>Empresa</th>
                                 <th>Estado</th>
                                 <th>Plataformas</th>
@@ -2429,7 +2532,7 @@ HTML_TEMPLATE = """
                         <tbody>
                             {% for ad in anuncios_retirados %}
                             <tr>
-                                {% if es_beta %}{{ celda_miniatura(ad) }}{% endif %}
+                                {{ celda_miniatura(ad) }}
                                 <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
                                 <td><span class="badge badge-retirado"><i class="bi bi-x-circle me-1"></i> Retirado</span></td>
                                 <td>{{ ad.plataformas_html|safe }}</td>
@@ -2462,7 +2565,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="{{ 9 if es_beta else 8 }}" class="text-center py-5 text-muted">
+                                <td colspan="9" class="text-center py-5 text-muted">
                                     <i class="bi bi-check-circle fs-2 d-block mb-2 text-success"></i> No hay anuncios retirados registrados en la base de datos para los filtros seleccionados.
                                 </td>
                             </tr>
@@ -2492,7 +2595,7 @@ HTML_TEMPLATE = """
                     <table class="table table-hover align-middle mb-0" id="nuevosTable">
                         <thead class="table-light">
                             <tr class="small text-muted">
-                                {% if es_beta %}<th>Vista</th>{% endif %}
+                                <th>Vista</th>
                                 <th>Empresa</th>
                                 <th>Distintivo</th>
                                 <th>Plataformas</th>
@@ -2505,7 +2608,7 @@ HTML_TEMPLATE = """
                         <tbody>
                             {% for ad in anuncios_nuevos %}
                             <tr class="fila-nuevo-ad" data-ad-id="{{ ad.id or loop.index }}">
-                                {% if es_beta %}{{ celda_miniatura(ad) }}{% endif %}
+                                {{ celda_miniatura(ad) }}
                                 <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
                                 <td><span class="badge badge-new"><i class="bi bi-stars"></i> Nuevo</span></td>
                                 <td>{{ ad.plataformas_html|safe }}</td>
@@ -2535,7 +2638,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="{{ 8 if es_beta else 7 }}" class="text-center py-5 text-muted">
+                                <td colspan="8" class="text-center py-5 text-muted">
                                     <i class="bi bi-check2-circle fs-2 d-block mb-2 text-success"></i> No hay anuncios nuevos pendientes de revisión.
                                 </td>
                             </tr>
@@ -2908,6 +3011,144 @@ HTML_TEMPLATE = """
     if (disenoV2 && !reducirMovimiento) {
         document.querySelectorAll('.kpi-row .stat-value').forEach(contarHasta);
     }
+
+    // Miniaturas (todos los usuarios). Clic en la miniatura: imagen completa en una ventana. Si la imagen caducó, se abre el anuncio.
+    document.addEventListener('click', ev => {
+        const boton = ev.target.closest('button.miniatura');
+        if (!boton) return;
+        if (boton.classList.contains('sin-imagen') || !window.bootstrap) {
+            window.open(boton.dataset.enlace, '_blank', 'noopener');
+            return;
+        }
+        document.getElementById('vistaPreviaImagen').src = boton.dataset.imagen;
+        document.getElementById('vistaPreviaCompania').textContent = boton.dataset.compania;
+        document.getElementById('vistaPreviaTexto').textContent = boton.dataset.texto;
+        document.getElementById('vistaPreviaEnlace').href = boton.dataset.enlace;
+        const vistaPrevia = document.getElementById('modalVistaPrevia');
+        // Si se abre desde la ventana de Comparar, debe quedar por encima de ella.
+        vistaPrevia.style.zIndex = document.getElementById('modalComparar')?.classList.contains('show') ? 1065 : '';
+        bootstrap.Modal.getOrCreateInstance(vistaPrevia).show();
+    });
+
+    // Texto completo del anuncio al dejar el mouse encima; la espera evita que salte al pasar de largo.
+    document.addEventListener('DOMContentLoaded', () => {
+        if (!window.bootstrap) return;
+        document.querySelectorAll('.texto-completo').forEach(el => new bootstrap.Tooltip(el, {
+            delay: { show: 700, hide: 100 }, placement: 'top', container: 'body', customClass: 'tooltip-texto',
+        }));
+    });
+
+    // Editor simplificado de categorías de producto (todos los usuarios).
+    (function editorCategorias() {
+        const categorias = {{ categorias_config|tojson }};
+        const lista = document.getElementById('categoriasLista');
+        const form = document.getElementById('categoriaFormulario');
+        if (!form) return;
+        const caja = document.getElementById('categoriaChips');
+        const entrada = document.getElementById('categoriaPalabra');
+        const error = document.getElementById('categoriaError');
+        let original = null, palabras = [];
+
+        const normalizarTexto = t => (t || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase();
+        const escapar = t => t.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');
+        function probar() {
+            // Misma regla que el servidor: palabra exacta, o prefijo si termina en *.
+            const texto = normalizarTexto(document.getElementById('categoriaPrueba').value);
+            const salida = document.getElementById('categoriaResultado');
+            if (!texto || !palabras.length) { salida.textContent = ''; return; }
+            const encontradas = palabras.filter(p => {
+                const base = escapar(normalizarTexto(p.replace(/\\*$/, '')));
+                return new RegExp('\\\\b' + base + (p.endsWith('*') ? '' : '\\\\b')).test(texto);
+            });
+            salida.className = 'form-text ' + (encontradas.length ? 'text-success' : 'text-warning');
+            salida.textContent = encontradas.length ? `✓ Entraría en esta categoría (por: ${encontradas.join(', ')})` : 'No entraría en esta categoría con estas palabras.';
+        }
+        function dibujarChips() {
+            caja.querySelectorAll('.chip-palabra').forEach(c => c.remove());
+            palabras.forEach((p, i) => {
+                const chip = document.createElement('span');
+                chip.className = 'badge bg-primary-subtle text-primary-emphasis d-inline-flex align-items-center gap-1 chip-palabra';
+                chip.textContent = p;
+                const x = document.createElement('button');
+                x.type = 'button'; x.className = 'btn-close'; x.style.fontSize = '.5rem'; x.title = 'Quitar';
+                x.addEventListener('click', () => { palabras.splice(i, 1); dibujarChips(); });
+                chip.appendChild(x);
+                caja.insertBefore(chip, entrada);
+            });
+            probar();
+        }
+        function agregarPalabras(texto) {
+            texto.split(',').map(t => t.trim().toLowerCase()).filter(Boolean).forEach(t => { if (!palabras.includes(t)) palabras.push(t); });
+            dibujarChips();
+        }
+        entrada.addEventListener('keydown', ev => {
+            if (ev.key === 'Enter' || ev.key === ',') { ev.preventDefault(); agregarPalabras(entrada.value); entrada.value = ''; }
+            else if (ev.key === 'Backspace' && !entrada.value && palabras.length) { palabras.pop(); dibujarChips(); }
+        });
+        entrada.addEventListener('paste', ev => {
+            const t = (ev.clipboardData || window.clipboardData).getData('text');
+            if (t.includes(',')) { ev.preventDefault(); agregarPalabras(t); }
+        });
+        caja.addEventListener('click', () => entrada.focus());
+        document.getElementById('categoriaPrueba').addEventListener('input', probar);
+
+        function abrir(cat) {
+            original = cat ? cat.nombre : null;
+            palabras = cat ? [...cat.palabras] : [];
+            document.getElementById('categoriaTitulo').textContent = cat ? `Editar "${cat.nombre}"` : 'Agregar categoría';
+            document.getElementById('categoriaNombre').value = cat ? cat.nombre : '';
+            document.getElementById('categoriaPrueba').value = '';
+            entrada.value = '';
+            error.classList.add('d-none');
+            dibujarChips();
+            lista.classList.add('d-none'); form.classList.remove('d-none');
+            document.getElementById('categoriaNombre').focus();
+        }
+        async function enviar(ruta, cuerpo, boton) {
+            const textoBoton = boton.innerHTML;
+            boton.disabled = true;
+            boton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+            try {
+                const r = await fetch(ruta, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) });
+                const datos = await r.json().catch(() => ({ ok: false, error: `Error ${r.status}` }));
+                if (!datos.ok) throw new Error(datos.error || 'No se pudo guardar.');
+                window.location.href = '/?msg=' + encodeURIComponent(datos.mensaje);
+                return null;
+            } catch (e) {
+                boton.disabled = false; boton.innerHTML = textoBoton;
+                return e.message;
+            }
+        }
+        document.getElementById('categoriaNueva').addEventListener('click', () => abrir(null));
+        document.getElementById('categoriaCancelar').addEventListener('click', () => { form.classList.add('d-none'); lista.classList.remove('d-none'); });
+        document.querySelectorAll('.categoria-editar').forEach(b => b.addEventListener('click', () => abrir(categorias[+b.dataset.indice])));
+        document.querySelectorAll('.categoria-eliminar').forEach(b => b.addEventListener('click', async () => {
+            if (!confirm(`¿Eliminar la categoría "${b.dataset.nombre}"?`)) return;
+            const fallo = await enviar('/productos/eliminar', { nombre: b.dataset.nombre }, b);
+            if (fallo) alert(fallo);
+        }));
+        form.addEventListener('submit', async ev => {
+            ev.preventDefault();
+            if (entrada.value.trim()) { agregarPalabras(entrada.value); entrada.value = ''; }
+            error.classList.add('d-none');
+            const fallo = await enviar('/productos/guardar', { nombre: document.getElementById('categoriaNombre').value, nombre_original: original, palabras },
+                                       document.getElementById('categoriaGuardar'));
+            if (fallo) { error.textContent = fallo; error.classList.remove('d-none'); }
+        });
+    })();
+
+    // Filtro por producto (todos los usuarios): "Todos" equivale a no filtrar; al marcarlo se desmarcan
+    // los productos, y vuelve a marcarse solo si no queda ninguno elegido.
+    (function casillaTodosProductos() {
+        const maestra = document.getElementById('selectAllProductos');
+        const casillas = [...document.querySelectorAll('.prod-checkbox')];
+        if (!maestra) return;
+        maestra.addEventListener('change', () => {
+            if (maestra.checked) casillas.forEach(c => { c.checked = false; });
+            else if (!casillas.some(c => c.checked)) maestra.checked = true;
+        });
+        casillas.forEach(cb => cb.addEventListener('change', () => { maestra.checked = !casillas.some(c => c.checked); }));
+    })();
 
     const paletaEmpresas = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#14b8a6', '#a855f7', '#64748b'];
     if (document.getElementById('historialChart')) {
@@ -3517,7 +3758,7 @@ HTML_TEMPLATE = """
 
         // "Todas"/"Todos" equivale a no filtrar: al marcarla se desmarcan las opciones, y queda
         // marcada sola cuando no hay ninguna opción elegida (no se puede quedar en "ninguna").
-        [['#selectAllCompanies', '.comp-checkbox'], ['#selectAllProductos', '.prod-checkbox']].forEach(([todo, cada]) => {
+        [['#selectAllCompanies', '.comp-checkbox']].forEach(([todo, cada]) => {
             const maestra = document.querySelector(todo);
             const casillas = [...document.querySelectorAll(cada)];
             if (!maestra) return;
@@ -3538,32 +3779,6 @@ HTML_TEMPLATE = """
             desplegable.addEventListener('hidden.bs.dropdown', () => {
                 if (cambiado) aplicar();
             });
-        });
-
-        // Clic en la miniatura: imagen completa en una ventana. Si la imagen caducó, se abre el anuncio.
-        document.addEventListener('click', ev => {
-            const boton = ev.target.closest('button.miniatura');
-            if (!boton) return;
-            if (boton.classList.contains('sin-imagen') || !window.bootstrap) {
-                window.open(boton.dataset.enlace, '_blank', 'noopener');
-                return;
-            }
-            document.getElementById('vistaPreviaImagen').src = boton.dataset.imagen;
-            document.getElementById('vistaPreviaCompania').textContent = boton.dataset.compania;
-            document.getElementById('vistaPreviaTexto').textContent = boton.dataset.texto;
-            document.getElementById('vistaPreviaEnlace').href = boton.dataset.enlace;
-            const vistaPrevia = document.getElementById('modalVistaPrevia');
-            // Si se abre desde la ventana de Comparar, debe quedar por encima de ella.
-            vistaPrevia.style.zIndex = document.getElementById('modalComparar')?.classList.contains('show') ? 1065 : '';
-            bootstrap.Modal.getOrCreateInstance(vistaPrevia).show();
-        });
-
-        // Texto completo del anuncio al dejar el mouse encima; la espera evita que salte al pasar de largo.
-        document.addEventListener('DOMContentLoaded', () => {
-            if (!window.bootstrap) return;
-            document.querySelectorAll('.texto-completo').forEach(el => new bootstrap.Tooltip(el, {
-                delay: { show: 700, hide: 100 }, placement: 'top', container: 'body', customClass: 'tooltip-texto',
-            }));
         });
 
         const previo = leer('filtroAuto');
@@ -4159,6 +4374,7 @@ def index():
         raw_google_content=raw_google_content,
         lista_productos=sorted((nombre for nombre, _ in reglas_productos), key=normalizar) + [SIN_CLASIFICAR],
         raw_productos_content=raw_productos_content,
+        categorias_config=categorias_productos(raw_productos_content),
         companias_sel=companias_sel,
         productos_sel=productos_sel,
         total_anuncios=total_anuncios,
@@ -4305,6 +4521,60 @@ def guardar_urls_google():
     if success:
         return redirect(url_for('index', msg="✅ Archivo urls_google.txt guardado en GitHub exitosamente."))
     return redirect(url_for('index', msg=f"❌ {message}"))
+
+@app.route('/productos/guardar', methods=['POST'])
+@json_login_required
+def guardar_categoria():
+    datos = request.get_json(silent=True) or {}
+    nombre = re.sub(r'\s+', ' ', str(datos.get('nombre') or '')).strip()
+    original = str(datos.get('nombre_original') or '').strip() or None
+    if not nombre:
+        return {'ok': False, 'error': 'Escribe el nombre de la categoría.'}, 400
+    if '|' in nombre or ',' in nombre or len(nombre) > 60:
+        return {'ok': False, 'error': 'El nombre no puede tener "|" ni comas, ni más de 60 caracteres.'}, 400
+    if normalizar(nombre) == normalizar(SIN_CLASIFICAR):
+        return {'ok': False, 'error': f'"{SIN_CLASIFICAR}" es un nombre reservado.'}, 400
+    palabras, errores = [], []
+    for texto in datos.get('palabras') or []:
+        palabra, error = limpiar_palabra_clave(texto)
+        if error:
+            errores.append(error)
+        elif palabra and palabra not in palabras:
+            palabras.append(palabra)
+    if errores:
+        return {'ok': False, 'error': ' '.join(errores)}, 400
+    if not palabras:
+        return {'ok': False, 'error': 'Agrega al menos una palabra clave.'}, 400
+
+    raw, _ = get_github_urls_file(PRODUCTOS_FILE_PATH)
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return {'ok': False, 'error': 'Falta configurar GITHUB_TOKEN o GITHUB_REPO.'}, 500
+    existentes = {c['nombre'] for c in categorias_productos(raw)}
+    if nombre in existentes and nombre != original:
+        return {'ok': False, 'error': f'Ya existe la categoría "{nombre}". Edítala en vez de crear otra.'}, 400
+    if original and original not in existentes:
+        return {'ok': False, 'error': f'"{original}" ya no existe; recarga la página.'}, 409
+    nuevo = reemplazar_lineas_empresa(raw, original, [f"{nombre} | {', '.join(palabras)}"])
+    if nuevo != raw:
+        ok, mensaje = update_github_urls_file(nuevo, PRODUCTOS_FILE_PATH)
+        if not ok:
+            return {'ok': False, 'error': mensaje}, 502
+    return {'ok': True, 'mensaje': f'✅ Categoría "{nombre}" {"actualizada" if original else "agregada"}. Los anuncios se clasifican de nuevo al recargar el panel.'}
+
+@app.route('/productos/eliminar', methods=['POST'])
+@json_login_required
+def eliminar_categoria():
+    nombre = str((request.get_json(silent=True) or {}).get('nombre') or '').strip()
+    raw, _ = get_github_urls_file(PRODUCTOS_FILE_PATH)
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return {'ok': False, 'error': 'Falta configurar GITHUB_TOKEN o GITHUB_REPO.'}, 500
+    nuevo = reemplazar_lineas_empresa(raw, nombre, []) if nombre else raw
+    if not nombre or nuevo == raw:
+        return {'ok': False, 'error': f'"{nombre}" no está entre las categorías.'}, 404
+    ok, mensaje = update_github_urls_file(nuevo, PRODUCTOS_FILE_PATH)
+    if not ok:
+        return {'ok': False, 'error': mensaje}, 502
+    return {'ok': True, 'mensaje': f'🗑️ Categoría "{nombre}" eliminada. Sus anuncios quedarán en otras categorías o en "Sin clasificar".'}
 
 @app.route('/guardar_productos', methods=['POST'])
 @editor_urls_required
