@@ -924,6 +924,7 @@ HTML_TEMPLATE = """
             box-shadow: var(--shadow-sm);
             transition: translate .35s var(--ease-out), box-shadow .35s var(--ease-out), border-color .35s ease;
         }
+        .diseno-v2 .modal-content.card-custom:hover { translate: none; box-shadow: var(--shadow-md); border-color: var(--border-color); }
         .diseno-v2 .card-custom:hover {
             transform: none;
             translate: 0 -3px;
@@ -1262,7 +1263,7 @@ HTML_TEMPLATE = """
 {% if es_beta %}
 <!-- Modal: Comparar compañías (Beta). Las compañías se eligen dentro de la ventana. -->
 <div class="modal fade" id="modalComparar" tabindex="-1" aria-labelledby="compararTitulo">
-    <div class="modal-dialog modal-xl modal-fullscreen-lg-down modal-dialog-scrollable">
+    <div class="modal-dialog modal-xl modal-fullscreen-lg-down">
         <div class="modal-content card-custom">
             <div class="modal-header border-secondary border-opacity-25">
                 <h5 class="modal-title fw-bold" id="compararTitulo"><i class="bi bi-layout-split text-primary"></i> Comparar Compañías <span class="badge bg-warning text-dark fs-6 align-middle">BETA</span></h5>
