@@ -134,7 +134,7 @@ def editor_urls_required(f):
         if not session.get('logged_in'):
             return redirect(url_for('login', next=request.url))
         if usuario_actual() not in USUARIOS_EDITAN_URLS:
-            return redirect(url_for('index', msg="⛔ Solo el Administrador y Funciones Beta pueden modificar las URLs."))
+            return redirect(url_for('index', msg="⛔ Solo el Administrador y Funciones Beta pueden modificar la configuración."))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -1085,14 +1085,14 @@ HTML_TEMPLATE = """
                         <span class="small text-muted">Formato: <code>Categoría | palabra1, palabra2, prefijo*</code></span>
                         <span class="badge bg-secondary-subtle text-secondary">{{ lista_productos|length - 1 }} categorías</span>
                     </div>
-                    <textarea name="raw_productos" class="form-control form-control-sm font-monospace mb-2 bg-dark text-light border-secondary" rows="10" {% if not es_admin %}readonly{% endif %}>{{ raw_productos_content }}</textarea>
+                    <textarea name="raw_productos" class="form-control form-control-sm font-monospace mb-2 bg-dark text-light border-secondary" rows="10" {% if not puede_editar_urls %}readonly{% endif %}>{{ raw_productos_content }}</textarea>
                     <p class="small text-muted mb-3">Cada anuncio se clasifica según las palabras de su texto (sin importar mayúsculas ni tildes); puede tener varias categorías. Con <code>*</code> al final se incluyen variantes: <code>factur*</code> = factura, facturación, facturar. Los anuncios de Google no traen texto, por eso quedan "Sin clasificar".</p>
                     <div class="d-flex justify-content-between align-items-center">
                         <small class="text-secondary"><i class="bi bi-github"></i> Se sincronizará con el archivo <code>productos.txt</code> de tu repositorio.</small>
-                        {% if es_admin %}
+                        {% if puede_editar_urls %}
                         <button type="submit" class="btn btn-sm btn-primary px-3"><i class="bi bi-cloud-arrow-up"></i> Guardar en GitHub</button>
                         {% else %}
-                        <span class="small text-warning"><i class="bi bi-lock-fill"></i> Solo el Administrador puede modificar las categorías</span>
+                        <span class="small text-warning"><i class="bi bi-lock-fill"></i> Solo el Administrador y Funciones Beta pueden modificar las categorías</span>
                         {% endif %}
                     </div>
                 </form>
@@ -1536,7 +1536,10 @@ HTML_TEMPLATE = """
                         <h6 class="fw-bold text-primary mb-1"><i class="bi bi-buildings"></i> Empresas Monitoreadas y Volumen de {{ 'Anuncios' if es_beta else 'Creatividades' }}</h6>
                         <p class="small text-muted mb-0">{% if es_beta %}Anuncios que cumplen los filtros seleccionados, divididos por formato para cada marca.{% else %}Total de creatividades almacenadas en el sistema divididas por formato para cada marca.{% endif %}</p>
                     </div>
-                    <span class="badge bg-primary fs-6">{{ stats_empresas|length }} empresa{{ 's' if stats_empresas|length != 1 }}</span>
+                    {% set modos_empresas = [('historico', stats_empresas), ('actual', stats_empresas_vigentes)] if es_beta else [('historico', stats_empresas)] %}
+                    {% for modo, lista in modos_empresas %}
+                    <span class="badge bg-primary fs-6{% if modo == 'actual' %} d-none{% endif %}" data-modo-empresas="{{ modo }}">{{ lista|length }} empresa{{ 's' if lista|length != 1 }}</span>
+                    {% endfor %}
                 </div>
                 <div class="table-responsive">
                     <table class="table table-hover align-middle mb-0">
@@ -1551,8 +1554,9 @@ HTML_TEMPLATE = """
                                 <th class="text-end">Acciones</th>
                             </tr>
                         </thead>
-                        <tbody>
-                            {% for emp in stats_empresas %}
+                        {% for modo, lista in modos_empresas %}
+                        <tbody data-modo-empresas="{{ modo }}"{% if modo == 'actual' %} class="d-none"{% endif %}>
+                            {% for emp in lista %}
                             <tr>
                                 <td class="text-muted small">{{ loop.index }}</td>
                                 <td>
@@ -1587,11 +1591,12 @@ HTML_TEMPLATE = """
                             {% else %}
                             <tr>
                                 <td colspan="7" class="text-center py-5 text-muted">
-                                    <i class="bi bi-folder-x fs-2 d-block mb-2"></i> {{ 'No hay empresas con anuncios para los filtros seleccionados.' if es_beta else 'No hay estadísticas de empresas disponibles.' }}
+                                    <i class="bi bi-folder-x fs-2 d-block mb-2"></i> {% if not es_beta %}No hay estadísticas de empresas disponibles.{% elif modo == 'actual' %}No hay empresas con anuncios vigentes para los filtros seleccionados.{% else %}No hay empresas con anuncios para los filtros seleccionados.{% endif %}
                                 </td>
                             </tr>
                             {% endfor %}
                         </tbody>
+                        {% endfor %}
                     </table>
                 </div>
             </div>
@@ -2140,6 +2145,11 @@ HTML_TEMPLATE = """
 
     function setTimelineModo(modo, btnElement) {
         timelineModo = modo;
+        // Beta: la tabla de empresas también cambia entre todos los anuncios y solo los vigentes
+        const bloquesEmpresas = document.querySelectorAll('[data-modo-empresas]');
+        if ([...bloquesEmpresas].some(b => b.dataset.modoEmpresas === 'actual')) {
+            bloquesEmpresas.forEach(b => b.classList.toggle('d-none', b.dataset.modoEmpresas !== modo));
+        }
         if (btnElement) {
             document.querySelectorAll('#timelineModoFilter button').forEach(b => {
                 b.classList.remove('btn-primary', 'active');
@@ -2557,6 +2567,7 @@ def index():
     lista_companias = []
     companias_bloqueadas = []
     stats_empresas = []
+    stats_empresas_vigentes = []
 
     if conn:
         try:
@@ -2692,6 +2703,7 @@ def index():
 
     if es_beta:
         stats_empresas = estadisticas_por_empresa(anuncios)
+        stats_empresas_vigentes = estadisticas_por_empresa([a for a in anuncios if a.get('presente_en_meta')])
 
     total_anuncios = len(anuncios)
     companias_set = {a['compania'] for a in anuncios if a.get('compania')}
@@ -2787,6 +2799,7 @@ def index():
         timeline_data_actual=timeline_data_actual,
         format_data=format_data,
         stats_empresas=stats_empresas,
+        stats_empresas_vigentes=stats_empresas_vigentes,
         msg=msg
     )
 
@@ -2810,7 +2823,7 @@ def guardar_urls_google():
     return redirect(url_for('index', msg=f"❌ {message}"))
 
 @app.route('/guardar_productos', methods=['POST'])
-@admin_required
+@editor_urls_required
 def guardar_productos():
     raw = request.form.get('raw_productos', '').strip()
     success, message = update_github_urls_file(raw, PRODUCTOS_FILE_PATH)
