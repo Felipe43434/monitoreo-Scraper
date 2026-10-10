@@ -436,7 +436,8 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
     por_pagina = es_busqueda_por_pagina(url_final)
     oficiales = {}
     duraciones_api = {}
-    limitado = {"rate_limit": False}
+    limitado = {"rate_limit": False, "veces": 0}
+    con_miniatura = 0
 
     def interceptar_red(response):
         if any(w in response.url for w in ["graphql", "api", "ad_library"]):
@@ -446,6 +447,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
                     texto = texto[len("for (;;);"):]
                 if "Rate limit exceeded" in texto:
                     limitado["rate_limit"] = True
+                    limitado["veces"] += 1
 
                 for linea in texto.splitlines():
                     linea = linea.strip()
@@ -457,6 +459,9 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
                         continue
                     nuevos = {}
                     recolectar_oficiales(data, nuevos)
+                    if nuevos:
+                        # Llegaron anuncios: si antes hubo límite, Meta ya se recuperó.
+                        limitado["rate_limit"] = False
                     oficiales.update(nuevos)
                     for ad_id, obj in nuevos.items():
                         dur = extraer_duracion_json_profundo(obj)
@@ -478,21 +483,23 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
         pass
 
     print("📜 Desplazando y cargando creatividades de Meta...")
-    prev_ads_count = 0
-    intentos_sin_cambio = 0
+    if por_pagina:
+        cargar_todos_los_anuncios(page, url_final, oficiales, limitado)
+    else:
+        prev_ads_count = 0
+        intentos_sin_cambio = 0
+        for _ in range(25):
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(1.5)
 
-    for _ in range(25):
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        time.sleep(1.5)
-        
-        current_ads = page.locator("text=/Identificador de la biblioteca|Library ID|ID:/i").count()
-        if current_ads > prev_ads_count:
-            prev_ads_count = current_ads
-            intentos_sin_cambio = 0
-        else:
-            intentos_sin_cambio += 1
-            if intentos_sin_cambio >= 4:
-                break
+            current_ads = page.locator("text=/Identificador de la biblioteca|Library ID|ID:/i").count()
+            if current_ads > prev_ads_count:
+                prev_ads_count = current_ads
+                intentos_sin_cambio = 0
+            else:
+                intentos_sin_cambio += 1
+                if intentos_sin_cambio >= 4:
+                    break
 
     datos_anuncios = page.evaluate(r"""(nombreBuscado) => {
         const resultados = [];
@@ -727,10 +734,14 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
 
         if guardar_anuncio(anuncio_data, bloqueadas):
             guardados += 1
+            if anuncio_data["imagen_url"] and registro_bots.asegurar_miniatura(DATABASE_URL, link_individual, anuncio_data["imagen_url"]):
+                con_miniatura += 1
             badge_estado = "🟢 Activo" if estado == "Activo" else "⚪ Inactivo"
             print(f"  ✨ [{formato}] [{badge_estado}] {nombre_flask} | Plat: {plataformas or '?'} | Dur: {dur_txt} | Fecha: {fecha_final} | Titulo: {titulo_definitivo[:40]}...")
 
     print(f"✅ Anuncios registrados para {nombre_flask}: {guardados}")
+    if guardados:
+        print(f"🖼️ Miniaturas guardadas: {con_miniatura} de {guardados}")
     if CORRIDA:
         CORRIDA.resultado(nombre_flask, guardados,
                           aviso=f"{sin_datos_oficiales} sin datos oficiales" if sin_datos_oficiales else None)
@@ -746,6 +757,92 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
     if datos_anuncios and nombre_flask.lower() not in bloqueadas:
         marcar_no_detectados(nombre_flask, links_encontrados, fecha_desde)
     return None
+
+def total_resultados(page):
+    # Contador que muestra Meta ("~59 results"); None si no aparece.
+    try:
+        cuerpo = page.inner_text("body")
+    except Exception:
+        return None
+    if re.search(r"No ads match|No hay anuncios que coincidan", cuerpo, re.I):
+        return 0
+    m = re.search(r"~?\s*([\d.,]+)\s+(?:results?|resultados?)", cuerpo)
+    return int(re.sub(r"[.,]", "", m.group(1))) if m else None
+
+
+ESPERAS_LIMITE_META = [15, 30, 60]  # segundos de espera cuando Meta corta por "Rate limit"
+RECARGAS_MAXIMAS = 2
+SEMANAS_RESPALDO = 8  # cortes semanales cuando la paginación de Meta no deja cargar todo
+
+
+def cargar_todos_los_anuncios(page, url, oficiales, limitado):
+    """Búsqueda por página: sigue desplazando hasta tener el total que informa Meta. Si Meta corta por
+    límite de solicitudes, espera y reintenta; si se queda corta, recarga la página (los anuncios ya
+    recibidos se conservan, no se duplican)."""
+    esperas = list(ESPERAS_LIMITE_META)
+    recargas = RECARGAS_MAXIMAS
+    total = total_resultados(page)
+    previo, sin_cambio = len(oficiales), 0
+    for _ in range(150):
+        if total is not None and len(oficiales) >= total:
+            break
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        time.sleep(1.5)
+        if total is None:
+            total = total_resultados(page)
+        actual = len(oficiales)
+        if actual > previo:
+            previo, sin_cambio = actual, 0
+            continue
+        sin_cambio += 1
+        if limitado["rate_limit"] and esperas:
+            espera = esperas.pop(0)
+            print(f"  ⏳ Meta limitó las solicitudes ({actual} de ~{total or '?'} cargados); espero {espera} s y sigo...")
+            time.sleep(espera)
+            sin_cambio = 0
+            continue
+        if sin_cambio >= 4:
+            if total and actual < total * 0.9 and recargas > 0:
+                recargas -= 1
+                print(f"  🔄 Se cargaron {actual} de ~{total}; recargo la página para seguir sumando...")
+                time.sleep(10)
+                page.goto(url, wait_until="domcontentloaded", timeout=90000)
+                time.sleep(3)
+                sin_cambio = 0
+                continue
+            break
+    if total and len(oficiales) < total * 0.9:
+        cargar_por_semanas(page, url, oficiales, total)
+    print(f"  📦 Anuncios recibidos de Meta: {len(oficiales)} de ~{total if total is not None else '?'}"
+          + (f" (hubo {limitado['veces']} cortes por límite)" if limitado["veces"] else ""))
+
+
+def cargar_por_semanas(page, url, oficiales, total):
+    """Respaldo: la primera página de cada búsqueda (30 anuncios) viene dentro de la página y no
+    depende de la paginación que Meta limita. Filtrando por semanas en que el anuncio estuvo activo
+    se ven otros grupos de anuncios. No garantiza llegar al total (en semanas con más de 30 activos
+    solo se ven 30), pero suma lo que encuentre. Al final se vuelve a la búsqueda original para que
+    el contador y la verificación de búsqueda completa usen el total real."""
+    antes = len(oficiales)
+    hasta = datetime.now(timezone.utc).date()
+    for _ in range(SEMANAS_RESPALDO):
+        desde = hasta - timedelta(days=6)
+        try:
+            page.goto(f"{url}&start_date[min]={desde}&start_date[max]={hasta}", wait_until="domcontentloaded", timeout=90000)
+            time.sleep(3.5)
+            oficiales.update(oficiales_desde_html(page.content()))
+        except Exception as e:
+            print(f"  ⚠️ No se pudo revisar la semana {desde}..{hasta}: {e}")
+        if len(oficiales) >= total:
+            break
+        hasta = desde - timedelta(days=1)
+    print(f"  🗓️ Revisión por semanas: +{len(oficiales) - antes} anuncios")
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=90000)
+        time.sleep(3)
+    except Exception:
+        pass
+
 
 def busqueda_completa(page, cargados, rate_limit):
     # Solo se confía en la búsqueda si Meta no cortó la paginación y lo cargado coincide con

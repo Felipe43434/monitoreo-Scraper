@@ -311,6 +311,7 @@ def procesar_dominio(page, nombre, dominio):
     con_titulo = 0
     ya_leidos = titulos_guardados(nombre)
     con_ocr = 0
+    con_miniatura = 0
     for cid, item in creativos.items():
         primera = fecha_desde_epoch(item.get("6", {}))
         ultima = fecha_desde_epoch(item.get("7", {}))
@@ -350,12 +351,15 @@ def procesar_dominio(page, nombre, dominio):
         }
         if guardar_anuncio(anuncio):
             guardados += 1
+            if imagen and registro_bots.asegurar_miniatura(DATABASE_URL, link, imagen):
+                con_miniatura += 1
             print(f"  ✨ [{formato}] [{anuncio['estado']}] {nombre} | Plat: {anuncio['plataformas']} | Desde: {anuncio['fecha_subida']}")
 
     print(f"✅ Anuncios de Google registrados para {nombre}: {guardados} de {len(creativos)}")
     videos = sum(1 for it in creativos.values() if FORMATOS.get(it.get("4")) == "Video")
     if videos:
         print(f"🎬 Títulos de YouTube obtenidos: {con_titulo} de {videos} videos")
+    print(f"🖼️ Miniaturas guardadas: {con_miniatura} de {guardados}")
     estaticos = len(creativos) - videos
     if estaticos:
         print(f"🔤 Texto leído con OCR: {con_ocr} de {estaticos} anuncios de texto/imagen"

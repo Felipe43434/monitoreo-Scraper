@@ -14,7 +14,7 @@ from collections import Counter
 from functools import wraps
 import pandas as pd
 from dotenv import load_dotenv
-from flask import Flask, render_template_string, request, redirect, url_for, send_file, session
+from flask import Flask, render_template_string, request, redirect, url_for, send_file, session, Response, abort
 from markupsafe import Markup
 import registro_bots
 
@@ -541,7 +541,7 @@ def comparativa_empresas(anuncios, palabras_excluidas):
         # Lo justo para listar el anuncio al desplegar una fila de la tabla comparativa.
         d['anuncios'].append({
             'enlace': a.get('link_individual') or '',
-            'imagen': a.get('imagen_url') or '',
+            'imagen': f"/miniatura/{a['id']}" if a.get('id') and (a.get('tiene_miniatura') or a.get('imagen_url')) else '',
             'texto': str(a.get('texto') or a.get('titulo') or '')[:160],
             'formato': categoria,
             'fuente': a.get('fuente') or 'Meta',
@@ -1947,11 +1947,11 @@ HTML_TEMPLATE = """
     {# Miniatura del anuncio (Beta): clic = imagen completa en una ventana; se usa en todas las tablas de anuncios. #}
     {% macro celda_miniatura(ad) %}
     <td class="celda-miniatura">
-        {% if ad.imagen_url %}
+        {% if ad.id and (ad.tiene_miniatura or ad.imagen_url) %}
         <button type="button" class="miniatura border-0 p-0" title="Ver imagen completa"
-                data-imagen="{{ ad.imagen_url }}" data-enlace="{{ ad.link_individual }}"
+                data-imagen="/miniatura/{{ ad.id }}" data-enlace="{{ ad.link_individual }}"
                 data-compania="{{ ad.compania or '' }}" data-texto="{{ (ad.texto or ad.titulo or '')[:300] }}">
-            <img src="{{ ad.imagen_url }}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="sinImagen(this)">
+            <img src="/miniatura/{{ ad.id }}" alt="" loading="lazy" onerror="sinImagen(this)">
         </button>
         {% else %}
         <span class="miniatura sin-imagen" title="Sin vista previa todavía"><i class="bi bi-image"></i></span>
@@ -3988,6 +3988,36 @@ SALUD_TEMPLATE = """
 </html>
 """
 
+@app.route('/miniatura/<int:anuncio_id>')
+@login_required
+def miniatura(anuncio_id):
+    conn = get_db_connection()
+    if not conn:
+        abort(404)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT a.link_individual, a.imagen_url, m.imagen
+                FROM anuncios a LEFT JOIN miniaturas m ON m.link_individual = a.link_individual
+                WHERE a.id = %s
+            """, (anuncio_id,))
+            fila = cur.fetchone()
+            if not fila:
+                abort(404)
+            link, url_imagen, imagen = fila
+            if imagen is None:
+                datos = registro_bots.descargar_miniatura(url_imagen, timeout=8) if url_imagen else None
+                if not datos:
+                    abort(404)  # la URL de Meta ya caducó y no hay copia: el panel muestra el ícono
+                registro_bots.guardar_miniatura(cur, link, datos)
+                conn.commit()
+                imagen = datos[0]
+    finally:
+        conn.close()
+    respuesta = Response(bytes(imagen), mimetype='image/jpeg')
+    respuesta.headers['Cache-Control'] = 'private, max-age=604800'  # la imagen de un anuncio no cambia
+    return respuesta
+
 @app.route('/salud')
 @salud_required
 def salud():
@@ -4182,7 +4212,9 @@ def index():
                     """, (companias_bloqueadas,) if companias_bloqueadas else ())
                     stats_empresas = cur.fetchall()
 
-                query = "SELECT * FROM anuncios WHERE 1=1"
+                # tiene_miniatura: hay copia propia de la imagen (no caduca como las URLs de Meta).
+                query = ("SELECT *, EXISTS (SELECT 1 FROM miniaturas mi WHERE mi.link_individual = anuncios.link_individual)"
+                         " AS tiene_miniatura FROM anuncios WHERE 1=1")
                 params = []
 
                 if companias_bloqueadas:

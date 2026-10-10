@@ -8,9 +8,16 @@ Nada de esto debe tumbar un bot: los errores se imprimen y se sigue.
 """
 import os
 import json
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 
 import psycopg2
+import requests
+
+# Copia propia de cada miniatura: las URLs de imagen de Meta caducan en unos días. 640 px de lado y
+# JPEG calidad 82 se ven nítidas en la tabla y en la vista ampliada (unos 40-70 KB cada una).
+LADO_MINIATURA = 640
+CALIDAD_MINIATURA = 82
 
 
 def hoy_venezuela():
@@ -31,6 +38,16 @@ def crear_tablas(cur):
             PRIMARY KEY (fecha, compania, fuente)
         );
     """)
+    # Tabla aparte para que el panel no cargue las imágenes al listar anuncios.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS miniaturas (
+            link_individual TEXT PRIMARY KEY,
+            imagen BYTEA NOT NULL,
+            ancho INT,
+            alto INT,
+            guardada TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS corridas_scraper (
             id SERIAL PRIMARY KEY,
@@ -45,6 +62,64 @@ def crear_tablas(cur):
             url_ejecucion TEXT
         );
     """)
+
+
+def descargar_miniatura(url, timeout=15):
+    """Descarga la imagen y la deja en JPEG de hasta LADO_MINIATURA px. Devuelve (bytes, ancho, alto) o None."""
+    if not url or not url.startswith(('http://', 'https://')):
+        return None
+    try:
+        from PIL import Image, ImageOps
+        r = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200 or not r.content:
+            return None
+        img = ImageOps.exif_transpose(Image.open(BytesIO(r.content)))
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGBA")
+            fondo = Image.new("RGB", img.size, (255, 255, 255))
+            fondo.paste(img, mask=img.split()[-1])
+            img = fondo
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+        img.thumbnail((LADO_MINIATURA, LADO_MINIATURA), Image.LANCZOS)
+        salida = BytesIO()
+        img.save(salida, "JPEG", quality=CALIDAD_MINIATURA, optimize=True, progressive=True)
+        return salida.getvalue(), img.width, img.height
+    except Exception as e:
+        print(f"  ⚠️ No se pudo procesar la miniatura {url[:60]}: {e}")
+        return None
+
+
+def guardar_miniatura(cur, link, datos):
+    imagen, ancho, alto = datos
+    cur.execute("""
+        INSERT INTO miniaturas (link_individual, imagen, ancho, alto) VALUES (%s, %s, %s, %s)
+        ON CONFLICT (link_individual) DO NOTHING
+    """, (link, psycopg2.Binary(imagen), ancho, alto))
+
+
+def asegurar_miniatura(database_url, link, url_imagen):
+    """Guarda la copia de la miniatura si todavía no existe (la imagen de un anuncio no cambia).
+    Devuelve True si quedó guardada (nueva o ya existente)."""
+    if not link or not url_imagen:
+        return False
+    try:
+        conn = psycopg2.connect(database_url, connect_timeout=10)
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM miniaturas WHERE link_individual = %s", (link,))
+        if cur.fetchone():
+            cur.close(); conn.close()
+            return True
+        datos = descargar_miniatura(url_imagen)
+        if datos:
+            guardar_miniatura(cur, link, datos)
+            conn.commit()
+        cur.close()
+        conn.close()
+        return bool(datos)
+    except Exception as e:
+        print(f"  ⚠️ No se pudo guardar la miniatura: {e}")
+        return False
 
 
 def guardar_historial(database_url, fuente, companias):
