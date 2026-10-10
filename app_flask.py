@@ -84,6 +84,19 @@ def usuario_actual():
     # Las sesiones abiertas antes de existir los usuarios eran de la clave de Mercadeo.
     return session.get('usuario', 'mercadeo')
 
+# Usuario con el que se inició sesión con contraseña. Se conserva al cambiar de usuario
+# para que el Administrador o Funciones Beta puedan volver sin cerrar sesión.
+def usuario_origen():
+    return session.get('usuario_origen', usuario_actual())
+
+def puede_cambiar_usuario():
+    return usuario_origen() in (USUARIO_ADMIN, USUARIO_BETA)
+
+# Solo pasar a Administrador desde una sesión que no empezó como Administrador pide su
+# contraseña; los demás cambios no dan más permisos de los que ya tiene la sesión.
+def cambio_requiere_password(destino):
+    return destino == USUARIO_ADMIN and usuario_origen() != USUARIO_ADMIN
+
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -101,6 +114,10 @@ def inyectar_usuario():
         'usuario_nombre': USUARIOS.get(clave, {}).get('nombre', clave),
         'es_admin': clave == USUARIO_ADMIN,
         'es_beta': clave == USUARIO_BETA,
+        'puede_cambiar_usuario': puede_cambiar_usuario(),
+        'usuario_origen_nombre': USUARIOS.get(usuario_origen(), {}).get('nombre', usuario_origen()),
+        'cambio_pide_password': {u: cambio_requiere_password(u) for u in USUARIOS},
+        'usuarios_disponibles': {u: d['nombre'] for u, d in USUARIOS.items() if d['password']},
     }
 
 def get_db_connection():
@@ -152,6 +169,7 @@ def init_config_tables():
                 """)
                 cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS presente_en_meta BOOLEAN DEFAULT TRUE;")
                 cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fuente VARCHAR(20) DEFAULT 'Meta';")
+                cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fecha_ultima_vista VARCHAR(10);")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS migraciones (
                         nombre VARCHAR(100) PRIMARY KEY,
@@ -270,8 +288,29 @@ def clasificar_productos(ad, reglas):
     texto = normalizar(f"{ad.get('texto') or ''} {titulo}")
     return [nombre for nombre, patron in reglas if patron.search(texto)]
 
-def coincide_producto(productos, producto):
-    return not productos if producto == SIN_CLASIFICAR else producto in productos
+def estadisticas_por_empresa(anuncios):
+    # Tabla "Empresas Monitoreadas": se cuenta sobre los anuncios ya filtrados para que
+    # responda a los mismos filtros que el resto del panel.
+    stats = {}
+    for a in anuncios:
+        compania = (a.get('compania') or '').strip()
+        if not compania:
+            continue
+        fila = stats.setdefault(compania, {'compania': compania, 'total_anuncios': 0,
+                                           'total_videos': 0, 'total_fotos': 0, 'total_textos': 0})
+        formato = str(a.get('formato') or '').lower()
+        fila['total_anuncios'] += 1
+        if 'video' in formato or (a.get('duracion_segundos') or 0) > 0:
+            fila['total_videos'] += 1
+        elif 'foto' in formato or 'imagen' in formato:
+            fila['total_fotos'] += 1
+        elif 'texto' in formato:
+            fila['total_textos'] += 1
+    return sorted(stats.values(), key=lambda f: (-f['total_anuncios'], f['compania']))
+
+def coincide_producto(productos, seleccion):
+    # El anuncio pasa si tiene al menos uno de los productos elegidos.
+    return any(not productos if p == SIN_CLASIFICAR else p in productos for p in seleccion)
 
 def parse_urls_google(raw_text):
     items = []
@@ -348,14 +387,28 @@ def parse_date_str(val):
 
     return s[:10] if len(s) >= 10 else None
 
-def calcular_dias_activo(fecha_val):
+def fecha_ultima_vista(ad):
+    # Solo Google informa cuándo se mostró un anuncio por última vez. Las filas guardadas antes
+    # de existir la columna lo tienen en el título: "(visto por última vez AAAA-MM-DD)".
+    if (ad.get('fuente') or 'Meta') != 'Google':
+        return None
+    valor = ad.get('fecha_ultima_vista')
+    if not valor or str(valor).strip().lower() in ('none', 'nan', 'nat', ''):
+        m = re.search(r'visto por última vez (\d{4}-\d{2}-\d{2})', str(ad.get('titulo') or ''))
+        valor = m.group(1) if m else None
+    return str(valor).strip()[:10] if valor else None
+
+def calcular_dias_activo(fecha_val, hasta=None):
+    # "hasta" es la última vez que se vio el anuncio: uno que ya no circula deja de sumar días.
     f_norm = parse_date_str(fecha_val)
     if not f_norm:
         return 0
     try:
         dt = datetime.strptime(f_norm, '%Y-%m-%d')
-        diff = (datetime.now() - dt).days
-        return max(0, diff)
+        fin = datetime.now()
+        if hasta:
+            fin = min(fin, datetime.strptime(hasta, '%Y-%m-%d'))
+        return max(0, (fin - dt).days)
     except Exception:
         return 0
 
@@ -706,6 +759,13 @@ HTML_TEMPLATE = """
                 }
             }
         }
+        /* Filtros automáticos (Beta): tras recargar por un filtro solo se animan los resultados,
+           no la cabecera, y mientras carga se atenúa el contenido. */
+        .diseno-v2.filtro-recargado .kpi-row > *,
+        .diseno-v2.filtro-recargado .card-filter-container,
+        .diseno-v2.filtro-recargado .nav-tabs { animation: none; }
+        .diseno-v2 .tab-content { transition: opacity .2s ease; }
+        .diseno-v2.aplicando-filtros .tab-content { opacity: .45; pointer-events: none; }
         @media (prefers-reduced-motion: reduce) {
             .diseno-v2 .badge-new { animation: none; }
             .diseno-v2 .card-custom:hover, .diseno-v2 .btn:hover { translate: none; }
@@ -718,6 +778,7 @@ HTML_TEMPLATE = """
     {% endif %}
 </head>
 <body class="{% if es_beta %}diseno-v2{% endif %}">
+{% if es_beta %}<script>try { if (sessionStorage.getItem('filtroAuto')) document.body.classList.add('filtro-recargado'); } catch (e) {}</script>{% endif %}
 
 <nav class="navbar navbar-expand-lg navbar-dark px-3 py-2 sticky-top">
     <div class="container-fluid">
@@ -765,7 +826,14 @@ HTML_TEMPLATE = """
                     <i class="bi bi-gear-fill fs-5"></i>
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end shadow-sm">
-                    <li><h6 class="dropdown-header"><i class="bi bi-person-circle me-1"></i> Sesión: {{ usuario_nombre }}</h6></li>
+                    <li><h6 class="dropdown-header"><i class="bi bi-person-circle me-1"></i> Sesión: {{ usuario_nombre }}{% if usuario_origen_nombre != usuario_nombre %} <span class="fw-normal">(desde {{ usuario_origen_nombre }})</span>{% endif %}</h6></li>
+                    {% if puede_cambiar_usuario %}
+                    <li>
+                        <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-bs-toggle="modal" data-bs-target="#modalCambiarUsuario">
+                            <i class="bi bi-people"></i> Cambiar de Usuario
+                        </button>
+                    </li>
+                    {% endif %}
                     {% if es_admin %}
                     <li>
                         <a class="dropdown-item d-flex align-items-center gap-2" href="/accesos">
@@ -791,6 +859,52 @@ HTML_TEMPLATE = """
         </div>
     </div>
 </nav>
+
+{% if puede_cambiar_usuario %}
+<!-- Modal: Cambiar de usuario (solo sesiones iniciadas como Administrador o Funciones Beta) -->
+<div class="modal fade" id="modalCambiarUsuario" tabindex="-1">
+    <div class="modal-dialog modal-sm modal-dialog-centered">
+        <form class="modal-content card-custom" method="POST" action="/cambiar_usuario">
+            <div class="modal-header border-secondary border-opacity-25">
+                <h5 class="modal-title fw-bold"><i class="bi bi-people text-primary"></i> Cambiar de Usuario</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+            </div>
+            <div class="modal-body">
+                <label for="cambioUsuarioSelect" class="form-label small fw-semibold">Ver el panel como</label>
+                <select id="cambioUsuarioSelect" name="usuario" class="form-select form-select-sm mb-3">
+                    {% for clave, nombre in usuarios_disponibles.items() %}
+                    <option value="{{ clave }}" data-pide-password="{{ '1' if cambio_pide_password[clave] else '0' }}" {% if nombre == usuario_nombre %}selected{% endif %}>{{ nombre }}</option>
+                    {% endfor %}
+                </select>
+                <div id="cambioUsuarioPassword" class="d-none">
+                    <label for="cambioUsuarioPasswordInput" class="form-label small fw-semibold">Contraseña del Administrador</label>
+                    <input id="cambioUsuarioPasswordInput" type="password" name="password" class="form-control form-control-sm" autocomplete="current-password">
+                </div>
+                <p class="small text-muted mb-0 mt-2">Puedes volver a {{ usuario_origen_nombre }} desde este mismo menú sin cerrar sesión.</p>
+            </div>
+            <div class="modal-footer border-secondary border-opacity-25">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="submit" class="btn btn-sm btn-primary">Cambiar</button>
+            </div>
+        </form>
+    </div>
+</div>
+<script>
+(function () {
+    const select = document.getElementById('cambioUsuarioSelect');
+    const bloque = document.getElementById('cambioUsuarioPassword');
+    const input = document.getElementById('cambioUsuarioPasswordInput');
+    function actualizar() {
+        const pide = select.selectedOptions[0]?.dataset.pidePassword === '1';
+        bloque.classList.toggle('d-none', !pide);
+        input.required = pide;
+        if (!pide) input.value = '';
+    }
+    select.addEventListener('change', actualizar);
+    actualizar();
+})();
+</script>
+{% endif %}
 
 <!-- Modal: Editor urls.txt en GitHub -->
 <div class="modal fade" id="modalConfigUrls" tabindex="-1">
@@ -1050,9 +1164,12 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    {% set pestanas_validas = ['tab-charts', 'tab-ads', 'tab-winning', 'tab-retirados', 'tab-new', 'tab-keywords'] %}
+    {% set pestana_activa = request.args.get('pestana') if es_beta and request.args.get('pestana') in pestanas_validas else 'tab-charts' %}
     <!-- Panel de Filtros -->
     <div class="card-custom p-3 mb-4 card-filter-container">
         <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end">
+            {% if es_beta %}<input type="hidden" name="pestana" id="pestanaActual" value="{{ pestana_activa }}">{% endif %}
             <!-- 1. Buscar -->
             <div class="col-md-3 col-lg-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-search"></i> Buscar</label>
@@ -1170,20 +1287,41 @@ HTML_TEMPLATE = """
             {% if es_beta %}
             <div class="col-6 col-md-3 col-lg-2">
                 <label class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-box-seam"></i> Producto <span class="badge bg-warning text-dark">BETA</span></label>
-                <select name="producto" class="form-select form-select-sm">
-                    <option value="">Todos</option>
-                    {% for p in lista_productos %}
-                    <option value="{{ p }}" {% if request.args.get('producto') == p %}selected{% endif %}>{{ p }}</option>
-                    {% endfor %}
-                </select>
+                <div class="dropdown">
+                    <button class="form-select form-select-sm text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                        <span class="text-truncate">{% if productos_sel %}{{ productos_sel|join(', ') }}{% else %}Todos{% endif %}</span>
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow-lg" style="min-width: 240px;">
+                        {% for p in lista_productos %}
+                        <div class="form-check">
+                            <input class="form-check-input prod-checkbox" type="checkbox" name="producto" value="{{ p }}" id="prod_{{ loop.index }}" {% if p in productos_sel %}checked{% endif %}>
+                            <label class="form-check-label small" for="prod_{{ loop.index }}">{{ p }}</label>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
             </div>
             {% endif %}
 
             <!-- 8. Botones de Acción -->
-            <div class="col-12 col-lg-2 d-flex gap-1">
+            <div class="col-12 {{ 'col-lg-auto' if es_beta else 'col-lg-2' }} d-flex gap-1">
+                {% if es_beta %}
+                <span id="estadoFiltros" class="small text-muted d-flex align-items-center justify-content-center gap-1 flex-grow-1 px-1 text-nowrap" title="Los filtros se aplican solos al cambiarlos">
+                    <i class="bi bi-lightning-charge"></i> Automáticos
+                </span>
+                {% else %}
                 <button type="submit" class="btn btn-sm btn-primary w-100"><i class="bi bi-funnel"></i> Filtrar</button>
+                {% endif %}
+                {% if es_beta %}
+                <a href="/?pestana={{ pestana_activa }}" id="limpiarFiltros" class="btn btn-sm btn-outline-secondary" title="Limpiar filtros"><i class="bi bi-trash3"></i></a>
+                <a href="/descargar_excel?{{ request.query_string.decode() }}" class="btn btn-sm btn-success text-nowrap d-flex align-items-center gap-1" title="Descargar los anuncios filtrados en Excel">
+                    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="1" width="14" height="14" rx="2.5" fill="#fff"/><path d="M5.3 4.6l5.4 6.8M10.7 4.6l-5.4 6.8" stroke="#107C41" stroke-width="1.9" stroke-linecap="round"/></svg>
+                    Exportar a Excel
+                </a>
+                {% else %}
                 <a href="/" class="btn btn-sm btn-outline-secondary" title="Limpiar filtros"><i class="bi bi-arrow-counterclockwise"></i></a>
                 <a href="/descargar_excel?{{ request.query_string.decode() }}" class="btn btn-sm btn-success text-nowrap" title="Descargar Excel"><i class="bi bi-file-earmark-excel"></i></a>
+                {% endif %}
             </div>
         </form>
     </div>
@@ -1191,17 +1329,17 @@ HTML_TEMPLATE = """
     <!-- Pestañas -->
     <ul class="nav nav-tabs mb-3" id="mainTab" role="tablist">
         <li class="nav-item">
-            <button class="nav-link active fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-charts" type="button">
+            <button class="nav-link {% if pestana_activa == 'tab-charts' %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-charts" type="button">
                 <i class="bi bi-bar-chart-line"></i> Vista General & Tendencias
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-ads" type="button">
+            <button class="nav-link {% if pestana_activa == 'tab-ads' %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-ads" type="button">
                 <i class="bi bi-list-columns"></i> Detalle de Anuncios ({{ anuncios|length }})
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link fw-semibold position-relative text-danger" data-bs-toggle="tab" data-bs-target="#tab-winning" type="button">
+            <button class="nav-link {% if pestana_activa == 'tab-winning' %}active {% endif %}fw-semibold position-relative text-danger" data-bs-toggle="tab" data-bs-target="#tab-winning" type="button">
                 <i class="bi bi-fire"></i> Winning Ads
                 {% if total_winning > 0 %}
                 <span class="badge rounded-pill bg-danger ms-1">{{ total_winning }}</span>
@@ -1209,21 +1347,22 @@ HTML_TEMPLATE = """
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link fw-semibold position-relative text-danger" data-bs-toggle="tab" data-bs-target="#tab-retirados" type="button">
-                <i class="bi bi-eye-slash"></i> Retirados de Meta
+            <button class="nav-link {% if pestana_activa == 'tab-retirados' %}active {% endif %}fw-semibold position-relative text-danger" data-bs-toggle="tab" data-bs-target="#tab-retirados" type="button">
+                {% set fuente_filtro = request.args.get('fuente', '') %}
+                <i class="bi bi-eye-slash"></i> {% if es_beta %}Retirados{% if fuente_filtro in ('Meta', 'Google') %} de {{ fuente_filtro }}{% endif %}{% else %}Retirados de Meta{% endif %}
                 {% if total_retirados > 0 %}
                 <span class="badge rounded-pill bg-danger ms-1">{{ total_retirados }}</span>
                 {% endif %}
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link fw-semibold position-relative text-info" data-bs-toggle="tab" data-bs-target="#tab-new" type="button">
+            <button class="nav-link {% if pestana_activa == 'tab-new' %}active {% endif %}fw-semibold position-relative text-info" data-bs-toggle="tab" data-bs-target="#tab-new" type="button">
                 <i class="bi bi-stars text-info"></i> Nuevos Anuncios
                 <span class="badge rounded-pill bg-info ms-1" id="tabNuevosBadge" {% if total_nuevos == 0 %}style="display:none;"{% endif %}>{{ total_nuevos }}</span>
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-keywords" type="button">
+            <button class="nav-link {% if pestana_activa == 'tab-keywords' %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-keywords" type="button">
                 <i class="bi bi-chat-square-quote"></i> Términos Frecuentes
             </button>
         </li>
@@ -1231,16 +1370,16 @@ HTML_TEMPLATE = """
 
     <div class="tab-content">
         <!-- Panel 1: Gráficas y Empresas Registradas -->
-        <div class="tab-pane fade show active" id="tab-charts">
+        <div class="tab-pane fade{% if pestana_activa == 'tab-charts' %} show active{% endif %}" id="tab-charts">
             <div class="row g-3 mb-4">
                 <div class="col-lg-8">
                     <div class="card-custom p-3 h-100">
                         <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
-                            <h6 class="fw-bold m-0"><i class="bi bi-graph-up"></i> Publicación de Anuncios por Empresa</h6>
+                            <h6 class="fw-bold m-0"><i class="bi bi-graph-up"></i> {{ 'Anuncios Nuevos por Empresa' if es_beta else 'Publicación de Anuncios por Empresa' }}</h6>
                             <div class="d-flex flex-wrap gap-2">
                                 <div class="btn-group btn-group-sm" role="group" id="timelineModoFilter">
-                                    <button type="button" class="btn btn-primary active" onclick="setTimelineModo('historico', this)">Históricos</button>
-                                    <button type="button" class="btn btn-outline-secondary" onclick="setTimelineModo('actual', this)" title="Anuncios que siguen publicados en Meta o Google">Actuales</button>
+                                    <button type="button" class="btn btn-primary active" onclick="setTimelineModo('historico', this)">{{ 'Todos' if es_beta else 'Históricos' }}</button>
+                                    <button type="button" class="btn btn-outline-secondary" onclick="setTimelineModo('actual', this)" title="Anuncios que siguen publicados en Meta o Google">{{ 'Vigentes' if es_beta else 'Actuales' }}</button>
                                 </div>
                                 <div class="btn-group btn-group-sm" role="group" id="timeRangeFilter">
                                     <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(7, this)">7D</button>
@@ -1290,10 +1429,10 @@ HTML_TEMPLATE = """
             <div class="card-custom overflow-hidden reveal-scroll">
                 <div class="p-3 bg-primary bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
                     <div>
-                        <h6 class="fw-bold text-primary mb-1"><i class="bi bi-buildings"></i> Empresas Monitoreadas y Volumen de Creatividades</h6>
-                        <p class="small text-muted mb-0">Total de creatividades almacenadas en el sistema divididas por formato para cada marca.</p>
+                        <h6 class="fw-bold text-primary mb-1"><i class="bi bi-buildings"></i> Empresas Monitoreadas y Volumen de {{ 'Anuncios' if es_beta else 'Creatividades' }}</h6>
+                        <p class="small text-muted mb-0">{% if es_beta %}Anuncios que cumplen los filtros seleccionados, divididos por formato para cada marca.{% else %}Total de creatividades almacenadas en el sistema divididas por formato para cada marca.{% endif %}</p>
                     </div>
-                    <span class="badge bg-primary fs-6">{{ stats_empresas|length }} empresas</span>
+                    <span class="badge bg-primary fs-6">{{ stats_empresas|length }} empresa{{ 's' if stats_empresas|length != 1 }}</span>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-hover align-middle mb-0">
@@ -1336,15 +1475,15 @@ HTML_TEMPLATE = """
                                     </span>
                                 </td>
                                 <td class="text-end">
-                                    <a href="/?compania={{ emp.compania }}" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem;" title="Filtrar anuncios de esta empresa">
-                                        <i class="bi bi-funnel"></i> Ver Creatividades
+                                    <a href="/?compania={{ emp.compania|urlencode }}{% if es_beta %}&pestana=tab-ads{% endif %}" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem;" title="Filtrar anuncios de esta empresa">
+                                        <i class="bi bi-funnel"></i> {{ 'Ver Anuncios' if es_beta else 'Ver Creatividades' }}
                                     </a>
                                 </td>
                             </tr>
                             {% else %}
                             <tr>
                                 <td colspan="7" class="text-center py-5 text-muted">
-                                    <i class="bi bi-folder-x fs-2 d-block mb-2"></i> No hay estadísticas de empresas disponibles.
+                                    <i class="bi bi-folder-x fs-2 d-block mb-2"></i> {{ 'No hay empresas con anuncios para los filtros seleccionados.' if es_beta else 'No hay estadísticas de empresas disponibles.' }}
                                 </td>
                             </tr>
                             {% endfor %}
@@ -1355,7 +1494,7 @@ HTML_TEMPLATE = """
         </div>
 
         <!-- Panel 2: Detalle de Anuncios -->
-        <div class="tab-pane fade" id="tab-ads">
+        <div class="tab-pane fade{% if pestana_activa == 'tab-ads' %} show active{% endif %}" id="tab-ads">
             <div class="card-custom overflow-hidden">
                 <div class="table-responsive">
                     <table class="table table-hover align-middle mb-0">
@@ -1416,7 +1555,7 @@ HTML_TEMPLATE = """
                                     {{ (ad.texto or ad.titulo or 'Sin descripción')[:120] }}{% if (ad.texto or ad.titulo or '')|length > 120 %}...{% endif %}
                                     {% if es_beta and ad.productos %}
                                     <div class="mt-1 d-flex flex-wrap gap-1">
-                                        {% for p in ad.productos %}<span class="badge bg-primary-subtle text-primary-emphasis" style="font-size: 0.65rem;"><i class="bi bi-box-seam"></i> {{ p }}</span>{% endfor %}
+                                        {% for p in ad.productos %}{% if p in productos_sel %}<span class="badge bg-primary text-white shadow-sm" style="font-size: 0.65rem;" title="Producto filtrado"><i class="bi bi-check-circle-fill"></i> {{ p }}</span>{% else %}<span class="badge bg-primary-subtle text-primary-emphasis{% if productos_sel %} opacity-50{% endif %}" style="font-size: 0.65rem;"><i class="bi bi-box-seam"></i> {{ p }}</span>{% endif %}{% endfor %}
                                     </div>
                                     {% endif %}
                                 </td>
@@ -1454,7 +1593,7 @@ HTML_TEMPLATE = """
         </div>
 
         <!-- Panel 3: Winning Ads -->
-        <div class="tab-pane fade" id="tab-winning">
+        <div class="tab-pane fade{% if pestana_activa == 'tab-winning' %} show active{% endif %}" id="tab-winning">
             <div class="card-custom overflow-hidden">
                 <div class="p-3 bg-danger bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
                     <div>
@@ -1522,12 +1661,12 @@ HTML_TEMPLATE = """
         </div>
 
         <!-- Panel 4: Retirados / Inactivos de Meta -->
-        <div class="tab-pane fade" id="tab-retirados">
+        <div class="tab-pane fade{% if pestana_activa == 'tab-retirados' %} show active{% endif %}" id="tab-retirados">
             <div class="card-custom overflow-hidden">
                 <div class="p-3 bg-danger bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
                     <div>
                         <h6 class="fw-bold text-danger mb-1"><i class="bi bi-eye-slash"></i> Anuncios Guardados que Ya Fueron Retirados o Apagados</h6>
-                        <p class="small text-muted mb-0">Campañas que existieron en Meta Ads pero actualmente ya no están activas ni circulando.</p>
+                        <p class="small text-muted mb-0">Campañas que existieron en {% if not es_beta %}Meta Ads{% elif request.args.get('fuente') == 'Meta' %}Meta Ads{% elif request.args.get('fuente') == 'Google' %}Google Ads{% else %}Meta Ads o Google Ads{% endif %} pero actualmente ya no están activas ni circulando.</p>
                     </div>
                     <span class="badge bg-danger fs-6">{{ anuncios_retirados|length }} inactivos</span>
                 </div>
@@ -1592,7 +1731,7 @@ HTML_TEMPLATE = """
         </div>
 
         <!-- Panel 5: Nuevos Anuncios -->
-        <div class="tab-pane fade" id="tab-new">
+        <div class="tab-pane fade{% if pestana_activa == 'tab-new' %} show active{% endif %}" id="tab-new">
             <div class="card-custom overflow-hidden">
                 <div class="p-3 bg-info bg-opacity-10 border-bottom d-flex flex-wrap align-items-center justify-content-between gap-2">
                     <div>
@@ -1663,7 +1802,7 @@ HTML_TEMPLATE = """
         </div>
 
         <!-- Panel 6: Términos Frecuentes -->
-        <div class="tab-pane fade" id="tab-keywords">
+        <div class="tab-pane fade{% if pestana_activa == 'tab-keywords' %} show active{% endif %}" id="tab-keywords">
             <div class="row g-3">
                 <div class="col-lg-7">
                     <div class="card-custom p-3">
@@ -1827,7 +1966,7 @@ HTML_TEMPLATE = """
             if (pct < 30) {
                 status.innerText = 'Conectando con Meta Ads...';
             } else if (pct < 65) {
-                status.innerText = 'Scrapeando creatividades...';
+                status.innerText = 'Scrapeando {{ "anuncios" if es_beta else "creatividades" }}...';
             } else {
                 status.innerText = 'Sincronizando Base de Datos...';
             }
@@ -2017,6 +2156,87 @@ HTML_TEMPLATE = """
     if (disenoV2 && !reducirMovimiento) {
         document.querySelectorAll('.kpi-row .stat-value').forEach(contarHasta);
     }
+
+    {% if es_beta %}
+    // Filtros automáticos (Beta): cada cambio recarga el panel con los filtros aplicados.
+    // Antes de recargar se guarda el scroll y el foco para dejarlos igual después.
+    (function filtrosAutomaticos() {
+        const form = document.getElementById('filterForm');
+        if (!form) return;
+        const leer = (k) => { try { return sessionStorage.getItem(k); } catch (e) { return null; } };
+        const guardar = (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} };
+        const borrar = (k) => { try { sessionStorage.removeItem(k); } catch (e) {} };
+        const buscador = form.querySelector('input[name="q"]');
+        let espera = null;
+
+        form.addEventListener('submit', () => {
+            clearTimeout(espera);
+            guardar('filtroAuto', JSON.stringify({
+                scroll: window.scrollY,
+                foco: document.activeElement === buscador ? 'q' : '',
+            }));
+            document.body.classList.add('aplicando-filtros');
+            const estado = document.getElementById('estadoFiltros');
+            if (estado) estado.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Aplicando…';
+        });
+
+        function aplicar() {
+            if (form.requestSubmit) {
+                form.requestSubmit();
+            } else {
+                form.dispatchEvent(new Event('submit'));
+                form.submit();
+            }
+        }
+
+        form.querySelectorAll('select').forEach(el => el.addEventListener('change', aplicar));
+
+        if (buscador) {
+            buscador.addEventListener('input', () => {
+                clearTimeout(espera);
+                espera = setTimeout(aplicar, 800);
+            });
+        }
+
+        // La pestaña abierta viaja en la URL (?pestana=): filtrar, limpiar o recargar no devuelve a la principal.
+        document.querySelectorAll('#mainTab [data-bs-toggle="tab"]').forEach(boton => {
+            boton.addEventListener('shown.bs.tab', () => {
+                const pestana = boton.dataset.bsTarget.slice(1);
+                const campo = document.getElementById('pestanaActual');
+                if (campo) campo.value = pestana;
+                const limpiar = document.getElementById('limpiarFiltros');
+                if (limpiar) limpiar.href = '/?pestana=' + pestana;
+                const url = new URL(window.location.href);
+                url.searchParams.set('pestana', pestana);
+                history.replaceState(null, '', url);
+            });
+        });
+
+        // Compañías y Productos: se aplican al cerrar el desplegable para poder marcar varios seguidos.
+        form.querySelectorAll('.dropdown').forEach(desplegable => {
+            let cambiado = false;
+            desplegable.querySelectorAll('input[type="checkbox"]').forEach(cb =>
+                cb.addEventListener('change', () => { cambiado = true; }));
+            desplegable.addEventListener('hidden.bs.dropdown', () => {
+                if (cambiado) aplicar();
+            });
+        });
+
+        const previo = leer('filtroAuto');
+        if (!previo) return;
+        borrar('filtroAuto');
+        document.addEventListener('DOMContentLoaded', () => {
+            let datos = {};
+            try { datos = JSON.parse(previo); } catch (e) {}
+            if (datos.scroll) window.scrollTo(0, datos.scroll);
+            if (datos.foco === 'q' && buscador) {
+                buscador.focus({ preventScroll: true });
+                const fin = buscador.value.length;
+                buscador.setSelectionRange(fin, fin);
+            }
+        });
+    })();
+    {% endif %}
 </script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
@@ -2107,6 +2327,7 @@ def login():
         elif hmac.compare_digest(password.encode('utf-8'), datos['password'].encode('utf-8')):
             session['logged_in'] = True
             session['usuario'] = usuario_sel
+            session['usuario_origen'] = usuario_sel
             registrar_acceso(usuario_sel)
             return redirect(url_for('index'))
         else:
@@ -2117,7 +2338,29 @@ def login():
 def logout():
     session.pop('logged_in', None)
     session.pop('usuario', None)
+    session.pop('usuario_origen', None)
     return redirect(url_for('login'))
+
+@app.route('/cambiar_usuario', methods=['POST'])
+@login_required
+def cambiar_usuario():
+    if not puede_cambiar_usuario():
+        return redirect(url_for('index', msg="⛔ Solo el Administrador y Funciones Beta pueden cambiar de usuario."))
+    destino = request.form.get('usuario', '')
+    datos = USUARIOS.get(destino)
+    if not datos or not datos['password']:
+        return redirect(url_for('index', msg="❌ Ese usuario no existe o no tiene contraseña configurada."))
+    if destino == usuario_actual():
+        return redirect(url_for('index'))
+    if cambio_requiere_password(destino):
+        password = request.form.get('password', '')
+        if not hmac.compare_digest(password.encode('utf-8'), datos['password'].encode('utf-8')):
+            return redirect(url_for('index', msg="❌ Contraseña incorrecta, no se cambió de usuario."))
+        # Entrar como Administrador con su clave equivale a un inicio de sesión nuevo.
+        session['usuario_origen'] = destino
+        registrar_acceso(destino)
+    session['usuario'] = destino
+    return redirect(url_for('index', msg=f"🔄 Ahora estás viendo el panel como {datos['nombre']}."))
 
 @app.route('/accesos')
 @admin_required
@@ -2175,7 +2418,8 @@ def index():
     config_urls = parse_urls_txt(raw_urls_content)
     raw_google_content, _ = get_github_urls_file(URLS_GOOGLE_FILE_PATH)
     config_google = parse_urls_google(raw_google_content)
-    producto = request.args.get('producto', '').strip()
+    productos_sel = [p.strip() for p in request.args.getlist('producto') if p.strip()]
+    es_beta = usuario_actual() == USUARIO_BETA
     raw_productos_content = leer_config(PRODUCTOS_FILE_PATH)
     reglas_productos = parse_productos(raw_productos_content)
 
@@ -2206,24 +2450,25 @@ def index():
                     """)
                 lista_companias = [r['compania'] for r in cur.fetchall()]
 
-                # Conteo agrupado por empresa. Los '%%' son necesarios porque la consulta
-                # siempre se ejecuta con parámetros (psycopg2 leería '%v' como marcador).
-                es_video = "(LOWER(formato) LIKE '%%video%%' OR COALESCE(duracion_segundos, 0) > 0)"
-                filtro_bloqueadas = "AND compania != ALL(%s)" if companias_bloqueadas else ""
-                cur.execute(f"""
-                    SELECT
-                        compania,
-                        COUNT(*) AS total_anuncios,
-                        SUM(CASE WHEN {es_video} THEN 1 ELSE 0 END) AS total_videos,
-                        SUM(CASE WHEN NOT {es_video} AND (LOWER(formato) LIKE '%%foto%%' OR LOWER(formato) LIKE '%%imagen%%') THEN 1 ELSE 0 END) AS total_fotos,
-                        SUM(CASE WHEN NOT {es_video} AND LOWER(formato) LIKE '%%texto%%' THEN 1 ELSE 0 END) AS total_textos
-                    FROM anuncios
-                    WHERE compania IS NOT NULL AND compania != ''
-                    {filtro_bloqueadas}
-                    GROUP BY compania
-                    ORDER BY total_anuncios DESC;
-                """, (companias_bloqueadas,) if companias_bloqueadas else ())
-                stats_empresas = cur.fetchall()
+                if not es_beta:
+                    # Conteo agrupado por empresa. Los '%%' son necesarios porque la consulta
+                    # siempre se ejecuta con parámetros (psycopg2 leería '%v' como marcador).
+                    es_video = "(LOWER(formato) LIKE '%%video%%' OR COALESCE(duracion_segundos, 0) > 0)"
+                    filtro_bloqueadas = "AND compania != ALL(%s)" if companias_bloqueadas else ""
+                    cur.execute(f"""
+                        SELECT
+                            compania,
+                            COUNT(*) AS total_anuncios,
+                            SUM(CASE WHEN {es_video} THEN 1 ELSE 0 END) AS total_videos,
+                            SUM(CASE WHEN NOT {es_video} AND (LOWER(formato) LIKE '%%foto%%' OR LOWER(formato) LIKE '%%imagen%%') THEN 1 ELSE 0 END) AS total_fotos,
+                            SUM(CASE WHEN NOT {es_video} AND LOWER(formato) LIKE '%%texto%%' THEN 1 ELSE 0 END) AS total_textos
+                        FROM anuncios
+                        WHERE compania IS NOT NULL AND compania != ''
+                        {filtro_bloqueadas}
+                        GROUP BY compania
+                        ORDER BY total_anuncios DESC;
+                    """, (companias_bloqueadas,) if companias_bloqueadas else ())
+                    stats_empresas = cur.fetchall()
 
                 query = "SELECT * FROM anuncios WHERE 1=1"
                 params = []
@@ -2288,8 +2533,8 @@ def index():
 
     for a in anuncios:
         a['productos'] = clasificar_productos(a, reglas_productos)
-    if producto:
-        anuncios = [a for a in anuncios if coincide_producto(a['productos'], producto)]
+    if productos_sel:
+        anuncios = [a for a in anuncios if coincide_producto(a['productos'], productos_sel)]
 
     anuncios_winning = []
     anuncios_nuevos = []
@@ -2298,7 +2543,7 @@ def index():
     for a in anuncios:
         fecha_detectada = extraer_fecha_anuncio(a)
         a['fecha_display'] = fecha_detectada
-        dias = calcular_dias_activo(fecha_detectada)
+        dias = calcular_dias_activo(fecha_detectada, fecha_ultima_vista(a) if es_beta else None)
         a['dias_activo'] = dias
         
         estado_ad = str(a.get('estado', '')).strip().lower()
@@ -2315,6 +2560,9 @@ def index():
         # Filtro para anuncios retirados o inactivos
         if estado_ad == 'inactivo':
             anuncios_retirados.append(a)
+
+    if es_beta:
+        stats_empresas = estadisticas_por_empresa(anuncios)
 
     total_anuncios = len(anuncios)
     companias_set = {a['compania'] for a in anuncios if a.get('compania')}
@@ -2393,6 +2641,7 @@ def index():
         lista_productos=[nombre for nombre, _ in reglas_productos] + [SIN_CLASIFICAR],
         raw_productos_content=raw_productos_content,
         companias_sel=companias_sel,
+        productos_sel=productos_sel,
         total_anuncios=total_anuncios,
         total_companias=total_companias,
         total_videos=total_videos,
@@ -2583,12 +2832,13 @@ def descargar_excel():
         reglas_productos = parse_productos(leer_config(PRODUCTOS_FILE_PATH))
         productos_por_fila = [clasificar_productos(r, reglas_productos) for r in df.to_dict('records')]
         df['productos'] = [', '.join(p) for p in productos_por_fila]
-        producto = request.args.get('producto', '').strip()
-        if producto:
-            df = df[[coincide_producto(p, producto) for p in productos_por_fila]]
+        productos_sel = [p.strip() for p in request.args.getlist('producto') if p.strip()]
+        if productos_sel:
+            df = df[[coincide_producto(p, productos_sel) for p in productos_por_fila]]
 
         df['fecha_subida_detectada'] = df.apply(lambda row: extraer_fecha_anuncio(row.to_dict()), axis=1)
-        df['dias_activo'] = df['fecha_subida_detectada'].apply(calcular_dias_activo)
+        es_beta = usuario_actual() == USUARIO_BETA
+        df['dias_activo'] = df.apply(lambda r: calcular_dias_activo(r['fecha_subida_detectada'], fecha_ultima_vista(r.to_dict()) if es_beta else None), axis=1)
         df['es_winning_ad'] = df.apply(lambda r: (r['dias_activo'] >= DIAS_WINNING_AD and str(r.get('estado', '')).strip().lower() == 'activo'), axis=1)
 
         output = io.BytesIO()

@@ -64,6 +64,7 @@ def inicializar_bd():
         """)
         cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS presente_en_meta BOOLEAN DEFAULT TRUE;")
         cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fuente VARCHAR(20) DEFAULT 'Meta';")
+        cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fecha_ultima_vista VARCHAR(10);")
         conn.commit()
         cur.close()
         conn.close()
@@ -117,8 +118,8 @@ def guardar_anuncio(anuncio):
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, plataformas, formato, duracion_segundos, titulo, link_individual, presente_en_meta, fuente)
-            VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s, TRUE, 'Google')
+            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, plataformas, formato, duracion_segundos, titulo, link_individual, presente_en_meta, fuente, fecha_ultima_vista)
+            VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s, TRUE, 'Google', %s)
             ON CONFLICT (link_individual) DO UPDATE
             SET compania = EXCLUDED.compania,
                 fecha_subida = EXCLUDED.fecha_subida,
@@ -127,11 +128,13 @@ def guardar_anuncio(anuncio):
                 formato = EXCLUDED.formato,
                 titulo = EXCLUDED.titulo,
                 presente_en_meta = TRUE,
-                fuente = 'Google'
+                fuente = 'Google',
+                fecha_ultima_vista = EXCLUDED.fecha_ultima_vista
             RETURNING id;
         """, (
             anuncio["id_anuncio"], anuncio["compania"], anuncio["fecha_subida"], anuncio["estado"],
             anuncio["plataformas"], anuncio["formato"], anuncio["titulo"], anuncio["link_individual"],
+            anuncio["fecha_ultima_vista"],
         ))
         res = cur.fetchone()
         conn.commit()
@@ -193,6 +196,7 @@ def procesar_dominio(page, nombre, dominio):
             "titulo": f"Anuncio de {formato.lower()} en Google de {anunciante}"
                       + (f" (visto por última vez {ultima.strftime('%Y-%m-%d')})" if ultima else ""),
             "link_individual": link,
+            "fecha_ultima_vista": ultima.strftime('%Y-%m-%d') if ultima else None,
         }
         if guardar_anuncio(anuncio):
             guardados += 1

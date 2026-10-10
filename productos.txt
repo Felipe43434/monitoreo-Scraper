@@ -7,6 +7,7 @@ Nómina | nomina*, lottt, prestaciones sociales, liquidacion*, vacaciones, salar
 Impuestos | iva, islr, seniat, retencion*, sujetos pasivos especiales, spe, igtf, declaracion*, impuesto*, tribut*
 Ventas, Inventario y Punto de Venta | venta, ventas, vender, inventario*, mercancia*, almacen*, punto de venta, pos, stock, cobr*
 Finanzas | finanza*, flujo de caja, ganancia*, gasto*, rentab*
+Excel | excel, hoja de calculo, hojas de calculo, tabla dinamica, tablas dinamicas
 Cursos y Formación | curso*, taller*, webinar*, capacitacion*, formacion
 Ciberseguridad e IT | ciberseguridad, antivirus, eset, servidor*, malware, ransomware, virus, firewall, backup*
-Inteligencia Artificial | ia, inteligencia artificial, asistente virtual
+IA (Inteligencia Artificial) | ia, inteligencia artificial, asistente virtual, chatbot*, chatgpt, gpt, machine learning
