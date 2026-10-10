@@ -515,18 +515,39 @@ def comparativa_empresas(anuncios, palabras_excluidas):
             'compania': compania, 'total': 0, 'vigentes': 0, 'videos': 0, 'fotos': 0, 'textos': 0, 'otros': 0,
             'meta': 0, 'google': 0, 'winning': 0, 'nuevos7': 0, 'suma_dias': 0, 'con_dias': 0,
             'productos': Counter(), 'destinos': Counter(), 'plataformas': Counter(), 'palabras': Counter(),
+            'anuncios': [],
         })
         d['total'] += 1
         d['vigentes'] += 1 if a.get('presente_en_meta') else 0
         formato = str(a.get('formato') or '').lower()
         if 'video' in formato or (a.get('duracion_segundos') or 0) > 0:
             d['videos'] += 1
+            categoria = 'video'
         elif 'foto' in formato or 'imagen' in formato:
             d['fotos'] += 1
+            categoria = 'foto'
         elif 'texto' in formato:
             d['textos'] += 1
+            categoria = 'texto'
         else:
             d['otros'] += 1
+            categoria = 'otro'
+        con_fecha = a.get('fecha_display') not in (None, 'N/A')
+        # Lo justo para listar el anuncio al desplegar una fila de la tabla comparativa.
+        d['anuncios'].append({
+            'enlace': a.get('link_individual') or '',
+            'imagen': a.get('imagen_url') or '',
+            'texto': str(a.get('texto') or a.get('titulo') or '')[:160],
+            'formato': categoria,
+            'fuente': a.get('fuente') or 'Meta',
+            'vigente': bool(a.get('presente_en_meta')),
+            'winning': bool(a.get('es_winning')),
+            'nuevo': con_fecha and (a.get('dias_activo') or 0) <= 7,
+            'dias': a.get('dias_activo') if con_fecha else None,
+            'productos': a.get('productos') or [],
+            'destino': a.get('destino') or 'Sin dato',
+            'plataformas': [x.strip() for x in str(a.get('plataformas') or '').split(',') if x.strip()],
+        })
         d['google' if a.get('fuente') == 'Google' else 'meta'] += 1
         d['winning'] += 1 if a.get('es_winning') else 0
         if a.get('fecha_display') not in (None, 'N/A'):
@@ -1039,6 +1060,32 @@ HTML_TEMPLATE = """
         .diseno-v2.filtro-recargado .nav-tabs { animation: none; }
         .diseno-v2 .tab-content { transition: opacity .2s ease; }
         .celda-miniatura { width: 72px; }
+        #modalComparar .fila-comparar { cursor: pointer; }
+        #modalComparar .fila-comparar .flecha-comparar { display: inline-block; transition: transform .2s ease; color: var(--bs-secondary-color); }
+        #modalComparar .fila-comparar.abierta .flecha-comparar { transform: rotate(90deg); }
+        #modalComparar .fila-comparar.abierta > td { background: color-mix(in srgb, var(--bs-primary) 8%, transparent); }
+        #modalComparar .detalle-fila > td { background: color-mix(in srgb, var(--bs-primary) 4%, transparent); }
+        .detalle-comparar { max-height: 340px; overflow-y: auto; padding-right: 4px; }
+        .miniatura.miniatura-chica, .miniatura.miniatura-chica img { width: 40px; height: 40px; flex-shrink: 0; border-radius: 8px; }
+        .miniatura.miniatura-chica:hover img { transform: scale(2.6); }
+        .rejilla-detalle { display: grid; gap: 1rem; padding: .75rem .5rem .75rem; overflow-x: auto; }
+        /* Animaciones de la comparación (se desactivan con "reducir movimiento") */
+        #modalComparar .detalle-fila > td { padding: 0 !important; }
+        .desplegable {
+            display: grid; grid-template-rows: 0fr; opacity: 0;
+            transition: grid-template-rows .38s cubic-bezier(.22, 1, .36, 1), opacity .25s ease;
+        }
+        .desplegable.abierto { grid-template-rows: 1fr; opacity: 1; }
+        .desplegable-interior { overflow: hidden; min-height: 0; }
+        @keyframes entrar-suave { from { opacity: 0; translate: 0 6px; } }
+        .item-detalle { animation: entrar-suave .35s cubic-bezier(.22, 1, .36, 1) backwards; }
+        #compararTabla .fila-comparar { animation: entrar-suave .3s cubic-bezier(.22, 1, .36, 1) backwards; transition: background-color .2s ease; }
+        #compararTabla .fila-comparar:hover > td { background: color-mix(in srgb, var(--bs-primary) 5%, transparent); }
+        @media (prefers-reduced-motion: reduce) {
+            .desplegable { transition: none; }
+            .item-detalle, #compararTabla .fila-comparar { animation: none; }
+        }
+        .text-truncate-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .miniatura {
             position: relative; display: block; width: 56px; height: 56px; border-radius: 10px; overflow: visible;
             background: var(--border-color);
@@ -1597,6 +1644,20 @@ HTML_TEMPLATE = """
 
     {% set pestanas_validas = ['tab-charts', 'tab-ads', 'tab-winning', 'tab-retirados', 'tab-new', 'tab-keywords'] %}
     {% set pestana_activa = request.args.get('pestana') if es_beta and request.args.get('pestana') in pestanas_validas else 'tab-charts' %}
+    {# Miniatura del anuncio (Beta): clic = imagen completa en una ventana; se usa en todas las tablas de anuncios. #}
+    {% macro celda_miniatura(ad) %}
+    <td class="celda-miniatura">
+        {% if ad.imagen_url %}
+        <button type="button" class="miniatura border-0 p-0" title="Ver imagen completa"
+                data-imagen="{{ ad.imagen_url }}" data-enlace="{{ ad.link_individual }}"
+                data-compania="{{ ad.compania or '' }}" data-texto="{{ (ad.texto or ad.titulo or '')[:300] }}">
+            <img src="{{ ad.imagen_url }}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="sinImagen(this)">
+        </button>
+        {% else %}
+        <span class="miniatura sin-imagen" title="Sin vista previa todavía"><i class="bi bi-image"></i></span>
+        {% endif %}
+    </td>
+    {% endmacro %}
     <!-- Panel de Filtros -->
     <div class="card-custom p-3 mb-4 card-filter-container">
         <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end">
@@ -1990,19 +2051,7 @@ HTML_TEMPLATE = """
                         <tbody>
                             {% for ad in anuncios %}
                             <tr>
-                                {% if es_beta %}
-                                <td class="celda-miniatura">
-                                    {% if ad.imagen_url %}
-                                    <button type="button" class="miniatura border-0 p-0" title="Ver imagen completa"
-                                            data-imagen="{{ ad.imagen_url }}" data-enlace="{{ ad.link_individual }}"
-                                            data-compania="{{ ad.compania or '' }}" data-texto="{{ (ad.texto or ad.titulo or '')[:300] }}">
-                                        <img src="{{ ad.imagen_url }}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="sinImagen(this)">
-                                    </button>
-                                    {% else %}
-                                    <span class="miniatura sin-imagen" title="Sin vista previa todavía"><i class="bi bi-image"></i></span>
-                                    {% endif %}
-                                </td>
-                                {% endif %}
+                                {% if es_beta %}{{ celda_miniatura(ad) }}{% endif %}
                                 <td>
                                     <div class="d-flex align-items-center gap-1">
                                         <span class="fw-bold">{{ ad.compania or 'N/A' }}</span>
@@ -2076,7 +2125,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="8" class="text-center py-5 text-muted">
+                                <td colspan="{{ 9 if es_beta else 8 }}" class="text-center py-5 text-muted">
                                     <i class="bi bi-folder-x fs-2 d-block mb-2"></i> No hay registros disponibles
                                 </td>
                             </tr>
@@ -2101,6 +2150,7 @@ HTML_TEMPLATE = """
                     <table class="table table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr class="small text-muted">
+                                {% if es_beta %}<th>Vista</th>{% endif %}
                                 <th>Empresa</th>
                                 <th>Insignia</th>
                                 <th>Plataformas</th>
@@ -2114,6 +2164,7 @@ HTML_TEMPLATE = """
                         <tbody>
                             {% for ad in anuncios_winning %}
                             <tr>
+                                {% if es_beta %}{{ celda_miniatura(ad) }}{% endif %}
                                 <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
                                 <td><span class="badge badge-winning">🔥 Winning Ad</span></td>
                                 <td>{{ ad.plataformas_html|safe }}</td>
@@ -2144,7 +2195,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="8" class="text-center py-5 text-muted">
+                                <td colspan="{{ 9 if es_beta else 8 }}" class="text-center py-5 text-muted">
                                     <i class="bi bi-shield-check fs-2 d-block mb-2 text-warning"></i> No hay campañas activas con más de 30 días en los filtros seleccionados.
                                 </td>
                             </tr>
@@ -2169,6 +2220,7 @@ HTML_TEMPLATE = """
                     <table class="table table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr class="small text-muted">
+                                {% if es_beta %}<th>Vista</th>{% endif %}
                                 <th>Empresa</th>
                                 <th>Estado</th>
                                 <th>Plataformas</th>
@@ -2182,6 +2234,7 @@ HTML_TEMPLATE = """
                         <tbody>
                             {% for ad in anuncios_retirados %}
                             <tr>
+                                {% if es_beta %}{{ celda_miniatura(ad) }}{% endif %}
                                 <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
                                 <td><span class="badge badge-retirado"><i class="bi bi-x-circle me-1"></i> Retirado</span></td>
                                 <td>{{ ad.plataformas_html|safe }}</td>
@@ -2214,7 +2267,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="8" class="text-center py-5 text-muted">
+                                <td colspan="{{ 9 if es_beta else 8 }}" class="text-center py-5 text-muted">
                                     <i class="bi bi-check-circle fs-2 d-block mb-2 text-success"></i> No hay anuncios retirados registrados en la base de datos para los filtros seleccionados.
                                 </td>
                             </tr>
@@ -2244,6 +2297,7 @@ HTML_TEMPLATE = """
                     <table class="table table-hover align-middle mb-0" id="nuevosTable">
                         <thead class="table-light">
                             <tr class="small text-muted">
+                                {% if es_beta %}<th>Vista</th>{% endif %}
                                 <th>Empresa</th>
                                 <th>Distintivo</th>
                                 <th>Plataformas</th>
@@ -2256,6 +2310,7 @@ HTML_TEMPLATE = """
                         <tbody>
                             {% for ad in anuncios_nuevos %}
                             <tr class="fila-nuevo-ad" data-ad-id="{{ ad.id or loop.index }}">
+                                {% if es_beta %}{{ celda_miniatura(ad) }}{% endif %}
                                 <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
                                 <td><span class="badge badge-new"><i class="bi bi-stars"></i> Nuevo</span></td>
                                 <td>{{ ad.plataformas_html|safe }}</td>
@@ -2285,7 +2340,7 @@ HTML_TEMPLATE = """
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="7" class="text-center py-5 text-muted">
+                                <td colspan="{{ 8 if es_beta else 7 }}" class="text-center py-5 text-muted">
                                     <i class="bi bi-check2-circle fs-2 d-block mb-2 text-success"></i> No hay anuncios nuevos pendientes de revisión.
                                 </td>
                             </tr>
@@ -2741,6 +2796,74 @@ HTML_TEMPLATE = """
             const [clave, n] = Object.entries(obj || {}).sort((a, b) => b[1] - a[1])[0] || [];
             return clave ? `${clave} (${n})` : '-';
         }
+        function clavePrincipal(obj, ocultar) {
+            const [clave] = Object.entries(obj || {}).filter(([k]) => k !== ocultar).sort((a, b) => b[1] - a[1])[0] || [];
+            return clave;
+        }
+        const MAX_DETALLE = 40;
+        function listaAnuncios(anuncios, mostrarDias) {
+            // Lista compacta: miniatura (abre la imagen completa), texto y etiquetas.
+            const caja = document.createElement('div');
+            caja.className = 'detalle-comparar text-start';
+            const cuenta = document.createElement('div');
+            cuenta.className = 'small text-muted mb-1';
+            cuenta.textContent = anuncios.length === 1 ? '1 anuncio' : `${anuncios.length} anuncios`;
+            caja.appendChild(cuenta);
+            anuncios.slice(0, MAX_DETALLE).forEach((ad, indice) => {
+                const fila = document.createElement('div');
+                fila.className = 'd-flex align-items-start gap-2 py-1 border-top item-detalle';
+                fila.style.animationDelay = `${Math.min(indice, 10) * 35 + 80}ms`;
+                if (ad.imagen) {
+                    const b = document.createElement('button');
+                    b.type = 'button'; b.className = 'miniatura miniatura-chica border-0 p-0'; b.title = 'Ver imagen completa';
+                    Object.assign(b.dataset, { imagen: ad.imagen, enlace: ad.enlace, compania: ad.compania || '', texto: ad.texto });
+                    const img = document.createElement('img');
+                    img.src = ad.imagen; img.loading = 'lazy'; img.referrerPolicy = 'no-referrer'; img.alt = '';
+                    img.onerror = () => sinImagen(img);
+                    b.appendChild(img);
+                    fila.appendChild(b);
+                } else {
+                    const vacio = document.createElement('span');
+                    vacio.className = 'miniatura miniatura-chica sin-imagen';
+                    vacio.innerHTML = '<i class="bi bi-image"></i>';
+                    fila.appendChild(vacio);
+                }
+                const cuerpo = document.createElement('div');
+                cuerpo.className = 'flex-grow-1 small';
+                const texto = document.createElement('div');
+                texto.className = 'text-truncate-2';
+                texto.textContent = ad.texto || 'Sin texto';
+                const etiquetas = document.createElement('div');
+                etiquetas.className = 'd-flex flex-wrap gap-1 mt-1';
+                const chips = [ad.fuente, ad.formato === 'video' ? 'Video' : ad.formato === 'foto' ? 'Foto' : ad.formato === 'texto' ? 'Texto' : null,
+                               ad.winning ? '🏆 Winning' : null, ad.nuevo ? 'Nuevo' : null, ad.vigente ? null : 'Retirado',
+                               mostrarDias && ad.dias != null ? `${ad.dias} días` : null].filter(Boolean);
+                chips.forEach(t => {
+                    const c = document.createElement('span');
+                    c.className = 'badge bg-body-secondary text-body-secondary fw-semibold';
+                    c.style.fontSize = '.62rem';
+                    c.textContent = t;
+                    etiquetas.appendChild(c);
+                });
+                const enlace = document.createElement('a');
+                enlace.href = ad.enlace; enlace.target = '_blank'; enlace.rel = 'noopener';
+                enlace.className = 'badge bg-primary-subtle text-primary-emphasis text-decoration-none';
+                enlace.style.fontSize = '.62rem';
+                enlace.innerHTML = '<i class="bi bi-box-arrow-up-right"></i> Ver';
+                etiquetas.appendChild(enlace);
+                cuerpo.append(texto, etiquetas);
+                fila.appendChild(cuerpo);
+                caja.appendChild(fila);
+            });
+            if (anuncios.length > MAX_DETALLE) {
+                const mas = document.createElement('div');
+                mas.className = 'small text-muted pt-1 border-top';
+                mas.textContent = `y ${anuncios.length - MAX_DETALLE} más (usa "Ver Anuncios" en la tabla de empresas para verlos todos)`;
+                caja.appendChild(mas);
+            }
+            if (!anuncios.length) cuenta.textContent = 'Sin anuncios';
+            return caja;
+        }
         function grafico(id, config) {
             if (graficos[id]) graficos[id].destroy();
             graficos[id] = new Chart(document.getElementById(id), config);
@@ -2754,19 +2877,22 @@ HTML_TEMPLATE = """
             avisar(''); contenido.classList.remove('d-none');
 
             // Tabla: una fila por métrica, una columna por compañía; se resalta el valor más alto.
+            // [nombre, valor, resaltar, número para resaltar, qué anuncios se listan al desplegar, ordenar por días]
             const filas = [
-                ['Anuncios', d => d.total, true],
-                ['Vigentes (siguen activos)', d => d.vigentes, true],
-                ['Videos', d => `${d.videos} · ${pct(d.videos, d.total)}`, false, d => d.videos],
-                ['Fotos', d => `${d.fotos} · ${pct(d.fotos, d.total)}`, false, d => d.fotos],
-                ['Textos', d => `${d.textos} · ${pct(d.textos, d.total)}`, false, d => d.textos],
-                ['En Meta / en Google', d => `${d.meta} / ${d.google}`],
-                ['Winning Ads (+30 días activos)', d => d.winning, true],
-                ['Nuevos en los últimos 7 días', d => d.nuevos7, true],
-                ['Días activos en promedio', d => d.dias_promedio ?? '-', true],
-                ['Producto principal', d => principal(Object.fromEntries(Object.entries(d.productos).filter(([k]) => k !== 'Sin clasificar')))],
-                ['Destino principal', d => principal(Object.fromEntries(Object.entries(d.destinos).filter(([k]) => k !== 'Sin dato')))],
-                ['Plataforma principal', d => principal(d.plataformas)],
+                ['Anuncios', d => d.total, true, null, () => true],
+                ['Vigentes (siguen activos)', d => d.vigentes, true, null, ad => ad.vigente],
+                ['Videos', d => `${d.videos} · ${pct(d.videos, d.total)}`, false, d => d.videos, ad => ad.formato === 'video'],
+                ['Fotos', d => `${d.fotos} · ${pct(d.fotos, d.total)}`, false, d => d.fotos, ad => ad.formato === 'foto'],
+                ['Textos', d => `${d.textos} · ${pct(d.textos, d.total)}`, false, d => d.textos, ad => ad.formato === 'texto'],
+                ['En Meta / en Google', d => `${d.meta} / ${d.google}`, false, null, () => true],
+                ['Winning Ads (+30 días activos)', d => d.winning, true, null, ad => ad.winning, true],
+                ['Nuevos en los últimos 7 días', d => d.nuevos7, true, null, ad => ad.nuevo],
+                ['Días activos en promedio', d => d.dias_promedio ?? '-', true, null, ad => ad.dias != null, true],
+                ['Producto principal', d => principal(Object.fromEntries(Object.entries(d.productos).filter(([k]) => k !== 'Sin clasificar'))),
+                 false, null, (ad, d) => ad.productos.includes(clavePrincipal(d.productos, 'Sin clasificar'))],
+                ['Destino principal', d => principal(Object.fromEntries(Object.entries(d.destinos).filter(([k]) => k !== 'Sin dato'))),
+                 false, null, (ad, d) => ad.destino === clavePrincipal(d.destinos, 'Sin dato')],
+                ['Plataforma principal', d => principal(d.plataformas), false, null, (ad, d) => ad.plataformas.includes(clavePrincipal(d.plataformas))],
             ];
             const tabla = document.getElementById('compararTabla');
             tabla.innerHTML = '';
@@ -2781,9 +2907,14 @@ HTML_TEMPLATE = """
                 thead.appendChild(th);
             });
             const tbody = tabla.createTBody();
-            filas.forEach(([nombre, valor, resaltar, numero]) => {
+            filas.forEach(([nombre, valor, resaltar, numero, filtro, porDias]) => {
                 const tr = tbody.insertRow();
-                const td0 = tr.insertCell(); td0.className = 'small fw-semibold'; td0.textContent = nombre;
+                tr.className = 'fila-comparar';
+                tr.title = 'Clic para ver los anuncios';
+                tr.style.animationDelay = `${tbody.rows.length * 25}ms`;
+                const td0 = tr.insertCell(); td0.className = 'small fw-semibold text-nowrap';
+                td0.innerHTML = '<i class="bi bi-chevron-right me-1 flecha-comparar"></i>';
+                td0.append(document.createTextNode(nombre));
                 const nums = lista.map(d => Number((numero || valor)(d)) || 0);
                 const max = Math.max(...nums);
                 lista.forEach((d, i) => {
@@ -2793,6 +2924,53 @@ HTML_TEMPLATE = """
                     if ((resaltar || numero) && max > 0 && nums[i] === max && nums.filter(n => n === max).length < lista.length) {
                         td.classList.add('fw-bold', 'text-primary');
                     }
+                });
+                // Fila de detalle (oculta): los anuncios de cada compañía que forman esta métrica.
+                let detalle = null;
+                tr.addEventListener('click', () => {
+                    if (detalle) {
+                        // Se pliega y, al terminar la transición, se quita la fila.
+                        const cerrando = detalle;
+                        detalle = null;
+                        tr.classList.remove('abierta');
+                        const plegable = cerrando.querySelector('.desplegable');
+                        const quitar = () => cerrando.remove();
+                        if (reducirMovimiento || !plegable) { quitar(); return; }
+                        plegable.classList.remove('abierto');
+                        plegable.addEventListener('transitionend', e => { if (e.propertyName === 'grid-template-rows') quitar(); });
+                        setTimeout(quitar, 500);
+                        return;
+                    }
+                    detalle = document.createElement('tr');
+                    detalle.className = 'detalle-fila';
+                    const celda = document.createElement('td');
+                    celda.colSpan = lista.length + 1;
+                    const rejilla = document.createElement('div');
+                    rejilla.className = 'rejilla-detalle';
+                    rejilla.style.gridTemplateColumns = `repeat(${lista.length}, minmax(260px, 1fr))`;
+                    lista.forEach((d, i) => {
+                        const columna = document.createElement('div');
+                        const titulo = document.createElement('div');
+                        titulo.className = 'small fw-semibold mb-1';
+                        titulo.innerHTML = `<span class="d-inline-block rounded-circle me-1" style="width:10px;height:10px;background:${color(i)}"></span>`;
+                        titulo.append(document.createTextNode(d.compania));
+                        let anuncios = d.anuncios.filter(ad => filtro(ad, d)).map(ad => ({...ad, compania: d.compania}));
+                        anuncios.sort(porDias ? (a, b) => (b.dias ?? -1) - (a.dias ?? -1) : (a, b) => (b.vigente - a.vigente) || ((a.dias ?? 1e9) - (b.dias ?? 1e9)));
+                        columna.append(titulo, listaAnuncios(anuncios, porDias || nombre.startsWith('Días')));
+                        rejilla.appendChild(columna);
+                    });
+                    const plegable = document.createElement('div');
+                    plegable.className = 'desplegable';
+                    const interior = document.createElement('div');
+                    interior.className = 'desplegable-interior';
+                    interior.appendChild(rejilla);
+                    plegable.appendChild(interior);
+                    celda.appendChild(plegable);
+                    detalle.appendChild(celda);
+                    tr.after(detalle);
+                    tr.classList.add('abierta');
+                    // Dos cuadros de espera para que el navegador pinte el estado cerrado antes de abrir.
+                    requestAnimationFrame(() => requestAnimationFrame(() => plegable.classList.add('abierto')));
                 });
             });
 
@@ -3081,7 +3259,10 @@ HTML_TEMPLATE = """
             document.getElementById('vistaPreviaCompania').textContent = boton.dataset.compania;
             document.getElementById('vistaPreviaTexto').textContent = boton.dataset.texto;
             document.getElementById('vistaPreviaEnlace').href = boton.dataset.enlace;
-            bootstrap.Modal.getOrCreateInstance(document.getElementById('modalVistaPrevia')).show();
+            const vistaPrevia = document.getElementById('modalVistaPrevia');
+            // Si se abre desde la ventana de Comparar, debe quedar por encima de ella.
+            vistaPrevia.style.zIndex = document.getElementById('modalComparar')?.classList.contains('show') ? 1065 : '';
+            bootstrap.Modal.getOrCreateInstance(vistaPrevia).show();
         });
 
         // Texto completo del anuncio al dejar el mouse encima; la espera evita que salte al pasar de largo.
