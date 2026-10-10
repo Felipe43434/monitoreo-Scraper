@@ -9,6 +9,7 @@ import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 from collections import Counter
 from functools import wraps
 import pandas as pd
@@ -218,6 +219,15 @@ def ultimas_corridas(cur):
         resumen.append(r)
     return resumen
 
+def url_con_filtros(**cambios):
+    # Enlace al panel que conserva los filtros actuales (búsqueda, fuente, productos...) y solo
+    # reemplaza los parámetros indicados; por ejemplo, otra compañía en "Ver Anuncios".
+    pares = [(k, v) for k, v in request.args.items(multi=True) if k not in cambios and k != 'msg']
+    for clave, valor in cambios.items():
+        valores = valor if isinstance(valor, (list, tuple)) else [valor]
+        pares.extend((clave, v) for v in valores if v not in (None, ''))
+    return '/?' + urlencode(pares)
+
 @app.context_processor
 def inyectar_usuario():
     clave = usuario_actual()
@@ -226,6 +236,7 @@ def inyectar_usuario():
         'es_admin': clave == USUARIO_ADMIN,
         'es_beta': clave == USUARIO_BETA,
         'puede_editar_urls': clave in USUARIOS_EDITAN_URLS,
+        'url_con_filtros': url_con_filtros,
         've_salud': clave in USUARIOS_SALUD,
         'nuevo': lambda funcion: Markup('<span class="badge-nuevo" title="Función nueva">NEW</span>')
                  if clave != USUARIO_BETA and es_funcion_nueva(funcion) else '',
@@ -461,7 +472,7 @@ def destinos_por_empresa(anuncios, maximo=10):
     return {'companias': companias, 'destinos': destinos,
             'series': {d: [conteo[c].get(d, 0) for c in companias] for d in destinos}}
 
-def historial_activos(companias_sel, fuente, companias_bloqueadas, dias=90, maximo=7):
+def historial_activos(companias_sel, fuente, companias_bloqueadas, dias=90, maximo=None):
     # Gráfico "Anuncios activos en el tiempo": suma Meta + Google salvo que se filtre por fuente.
     vacio = {'fechas': [], 'series': []}
     conn = get_db_connection()
@@ -491,6 +502,57 @@ def historial_activos(companias_sel, fuente, companias_bloqueadas, dias=90, maxi
     companias = sorted({c for _, c, _ in filas}, key=lambda c: (-valores.get((ultima, c), 0), c))[:maximo]
     return {'fechas': [f.strftime('%d/%m') for f in fechas],
             'series': [{'label': c, 'data': [valores.get((f, c)) for f in fechas]} for c in companias]}
+
+def comparativa_empresas(anuncios, palabras_excluidas):
+    # Pestaña "Comparar" (Beta): métricas por empresa sobre los anuncios ya filtrados. El navegador
+    # muestra solo las empresas elegidas, sin recargar la página.
+    datos = {}
+    for a in anuncios:
+        compania = (a.get('compania') or '').strip()
+        if not compania:
+            continue
+        d = datos.setdefault(compania, {
+            'compania': compania, 'total': 0, 'vigentes': 0, 'videos': 0, 'fotos': 0, 'textos': 0, 'otros': 0,
+            'meta': 0, 'google': 0, 'winning': 0, 'nuevos7': 0, 'suma_dias': 0, 'con_dias': 0,
+            'productos': Counter(), 'destinos': Counter(), 'plataformas': Counter(), 'palabras': Counter(),
+        })
+        d['total'] += 1
+        d['vigentes'] += 1 if a.get('presente_en_meta') else 0
+        formato = str(a.get('formato') or '').lower()
+        if 'video' in formato or (a.get('duracion_segundos') or 0) > 0:
+            d['videos'] += 1
+        elif 'foto' in formato or 'imagen' in formato:
+            d['fotos'] += 1
+        elif 'texto' in formato:
+            d['textos'] += 1
+        else:
+            d['otros'] += 1
+        d['google' if a.get('fuente') == 'Google' else 'meta'] += 1
+        d['winning'] += 1 if a.get('es_winning') else 0
+        if a.get('fecha_display') not in (None, 'N/A'):
+            d['suma_dias'] += a.get('dias_activo') or 0
+            d['con_dias'] += 1
+            d['nuevos7'] += 1 if (a.get('dias_activo') or 0) <= 7 else 0
+        d['productos'].update(a.get('productos') or [SIN_CLASIFICAR])
+        d['destinos'][a.get('destino') or 'Sin dato'] += 1
+        for plataforma in str(a.get('plataformas') or '').split(','):
+            if plataforma.strip():
+                d['plataformas'][plataforma.strip()] += 1
+        titulo = str(a.get('titulo') or '')
+        if not titulo.startswith('Anuncio de '):
+            for palabra in re.findall(r'[a-záéíóúñ]{4,}', f"{a.get('texto') or ''} {titulo}".lower()):
+                if palabra not in STOPWORDS_ES and palabra not in palabras_excluidas:
+                    d['palabras'][palabra] += 1
+    resultado = []
+    for d in sorted(datos.values(), key=lambda x: (-x['total'], x['compania'])):
+        d['dias_promedio'] = round(d.pop('suma_dias') / d['con_dias']) if d['con_dias'] else None
+        d.pop('con_dias')
+        d['productos'] = dict(d['productos'])
+        d['destinos'] = dict(d['destinos'])
+        d['plataformas'] = dict(d['plataformas'].most_common(8))
+        d['palabras'] = d['palabras'].most_common(6)
+        resultado.append(d)
+    return resultado
 
 def estadisticas_por_empresa(anuncios):
     # Tabla "Empresas Monitoreadas": se cuenta sobre los anuncios ya filtrados para que
@@ -897,6 +959,8 @@ HTML_TEMPLATE = """
             transition: border-color .2s ease, box-shadow .2s ease;
         }
         .diseno-v2 .nav-tabs { border-bottom-color: var(--border-color); gap: .15rem; }
+        /* Pestañas algo más compactas para que quepan en una sola línea en pantallas de ~1280 px */
+        .diseno-v2 #mainTab .nav-link { font-size: .9rem; padding: .5rem .8rem; white-space: nowrap; }
         .diseno-v2 .nav-tabs .nav-link {
             position: relative;
             border: 0;
@@ -1049,6 +1113,11 @@ HTML_TEMPLATE = """
             <button class="btn btn-sm btn-outline-danger d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalBlockedCompanies">
                 <i class="bi bi-slash-circle"></i> Bloqueadas ({{ companias_bloqueadas|length }})
             </button>
+            {% if es_beta %}
+            <button class="btn btn-sm btn-outline-info d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalComparar" title="Comparar dos o más compañías">
+                <i class="bi bi-layout-split"></i> Comparar
+            </button>
+            {% endif %}
 
             <div class="sync-container d-flex flex-column gap-1 ms-1">
                 <form action="/lanzar_scraper" method="POST" id="scraperForm" onsubmit="startInlineScraping(event)" class="d-flex align-items-center gap-2 m-0">
@@ -1184,6 +1253,79 @@ HTML_TEMPLATE = """
             <div class="modal-footer border-secondary border-opacity-25">
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cerrar</button>
                 <a id="vistaPreviaEnlace" href="#" target="_blank" rel="noopener" class="btn btn-sm btn-primary"><i class="bi bi-box-arrow-up-right"></i> Abrir anuncio</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if es_beta %}
+<!-- Modal: Comparar compañías (Beta). Las compañías se eligen dentro de la ventana. -->
+<div class="modal fade" id="modalComparar" tabindex="-1" aria-labelledby="compararTitulo">
+    <div class="modal-dialog modal-xl modal-fullscreen-lg-down modal-dialog-scrollable">
+        <div class="modal-content card-custom">
+            <div class="modal-header border-secondary border-opacity-25">
+                <h5 class="modal-title fw-bold" id="compararTitulo"><i class="bi bi-layout-split text-primary"></i> Comparar Compañías <span class="badge bg-warning text-dark fs-6 align-middle">BETA</span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+            </div>
+            <div class="modal-body">
+            <div class="card-custom p-3 mb-3">
+                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                        <span class="small fw-semibold">Elige 2 o más compañías</span>
+                        <span class="small text-muted">Se usan los filtros del panel (fuente, tiempo, producto, búsqueda…).</span>
+                    </div>
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        <div class="dropdown flex-grow-1" style="max-width: 460px;">
+                            <button class="form-select form-select-sm text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                                <span class="text-truncate" id="compararEtiqueta">Elegir compañías</span>
+                            </button>
+                            <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow-lg" id="compararSelector"></div>
+                        </div>
+                        <button type="button" id="compararExportar" class="btn btn-sm btn-success d-flex align-items-center gap-1" title="Descargar la comparación en Excel">
+                            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="1" width="14" height="14" rx="2.5" fill="#fff"/><path d="M5.3 4.6l5.4 6.8M10.7 4.6l-5.4 6.8" stroke="#107C41" stroke-width="1.9" stroke-linecap="round"/></svg>
+                            Exportar a Excel
+                        </button>
+                    </div>
+                    <div id="compararAviso" class="small text-warning mt-2 d-none"></div>
+                </div>
+                <div id="compararContenido" class="d-none">
+                    <div class="card-custom overflow-hidden mb-3">
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle mb-0" id="compararTabla"></table>
+                        </div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-lg-6">
+                            <div class="card-custom p-3 h-100">
+                                <h6 class="fw-bold mb-3"><i class="bi bi-collection-play"></i> Formatos</h6>
+                                <div style="height: 280px;"><canvas id="compararFormatos"></canvas></div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="card-custom p-3 h-100">
+                                <h6 class="fw-bold mb-3"><i class="bi bi-box-seam"></i> Productos que anuncian</h6>
+                                <div style="height: 280px;"><canvas id="compararProductos"></canvas></div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="card-custom p-3 h-100">
+                                <h6 class="fw-bold mb-3"><i class="bi bi-activity"></i> Anuncios activos en el tiempo</h6>
+                                <div id="compararHistorialVacio" class="text-center text-muted py-5 small d-none"><i class="bi bi-hourglass-split fs-3 d-block mb-2"></i>Se irá llenando con cada corrida de los bots.</div>
+                                <div style="height: 280px;"><canvas id="compararHistorial"></canvas></div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="card-custom p-3 h-100">
+                                <h6 class="fw-bold mb-3"><i class="bi bi-signpost-split"></i> ¿A dónde llevan los anuncios?</h6>
+                                <div style="height: 280px;"><canvas id="compararDestinos"></canvas></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-custom p-3">
+                        <h6 class="fw-bold mb-3"><i class="bi bi-chat-square-quote"></i> Palabras más usadas por cada una</h6>
+                        <div class="row g-3" id="compararPalabras"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -1803,7 +1945,7 @@ HTML_TEMPLATE = """
                                     </span>
                                 </td>
                                 <td class="text-end">
-                                    <a href="/?compania={{ emp.compania|urlencode }}{% if es_beta %}&pestana=tab-ads{% endif %}" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem;" title="Filtrar anuncios de esta empresa">
+                                    <a href="{% if es_beta %}{{ url_con_filtros(compania=emp.compania, pestana='tab-ads') }}{% else %}/?compania={{ emp.compania|urlencode }}{% endif %}" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem;" title="Filtrar anuncios de esta empresa">
                                         <i class="bi bi-funnel"></i> {{ 'Ver Anuncios' if es_beta else 'Ver Creatividades' }}
                                     </a>
                                 </td>
@@ -2512,13 +2654,13 @@ HTML_TEMPLATE = """
         document.querySelectorAll('.kpi-row .stat-value').forEach(contarHasta);
     }
 
-    const paletaEmpresas = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
+    const paletaEmpresas = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#14b8a6', '#a855f7', '#64748b'];
     if (document.getElementById('historialChart')) {
         new Chart(document.getElementById('historialChart'), {
             type: 'line',
             data: {
                 labels: historialData.fechas,
-                datasets: historialData.series.map((s, i) => ({
+                datasets: historialData.series.slice(0, 7).map((s, i) => ({
                     label: s.label, data: s.data, tension: .3, borderWidth: 2, pointRadius: 2,
                     borderColor: paletaEmpresas[i % paletaEmpresas.length],
                     backgroundColor: paletaEmpresas[i % paletaEmpresas.length],
@@ -2532,6 +2674,294 @@ HTML_TEMPLATE = """
             },
         });
     }
+    {% if es_beta %}
+    // Comparar compañías: la selección vive en la URL (?comparar=A&comparar=B) para poder compartirla.
+    (function compararCompanias() {
+        const datos = {{ comparativa|tojson }};
+        const selector = document.getElementById('compararSelector');
+        if (!selector) return;
+        const porNombre = Object.fromEntries(datos.map(d => [d.compania, d]));
+        const graficos = {};
+        const url = new URL(window.location.href);
+        let elegidas = url.searchParams.getAll('comparar').filter(c => porNombre[c]);
+        const filtradas = {{ companias_sel|tojson }}.filter(c => porNombre[c]);
+        if (elegidas.length < 2) elegidas = filtradas.length >= 2 ? filtradas : datos.slice(0, 3).map(d => d.compania);
+
+        const etiqueta = document.getElementById('compararEtiqueta');
+        if (datos.length < 2) {
+            etiqueta.textContent = 'Hace falta al menos 2 compañías con anuncios para los filtros actuales';
+            document.getElementById('compararExportar').disabled = true;
+            return;
+        }
+        // Mismo formato que el filtro de Compañías: "Todas" arriba y una casilla por compañía.
+        function fila(id, texto, negrita) {
+            const div = document.createElement('div');
+            div.className = 'form-check' + (negrita ? ' pb-1 mb-1 border-bottom' : '');
+            const input = document.createElement('input');
+            input.type = 'checkbox'; input.className = 'form-check-input'; input.id = id;
+            const label = document.createElement('label');
+            label.className = 'form-check-label small' + (negrita ? ' fw-bold' : ''); label.htmlFor = id; label.textContent = texto;
+            div.append(input, label);
+            selector.appendChild(div);
+            return input;
+        }
+        const todas = fila('cmp_todas', 'Todas', true);
+        const casillas = datos.map((d, i) => {
+            const input = fila('cmp_' + i, `${d.compania} (${d.total})`);
+            input.value = d.compania;
+            input.checked = elegidas.includes(d.compania);
+            return input;
+        });
+        function actualizarEtiqueta() {
+            todas.checked = casillas.every(c => c.checked);
+            etiqueta.textContent = todas.checked ? `Todas (${casillas.length})`
+                : (elegidas.length ? elegidas.join(', ') : 'Elegir compañías');
+        }
+        function cambio() {
+            elegidas = casillas.filter(c => c.checked).map(c => c.value);
+            actualizarEtiqueta();
+            guardarEnUrl(true);
+            dibujar();
+        }
+        todas.addEventListener('change', () => { casillas.forEach(c => { c.checked = todas.checked; }); cambio(); });
+        casillas.forEach(c => c.addEventListener('change', cambio));
+        actualizarEtiqueta();
+
+        function avisar(texto) {
+            const aviso = document.getElementById('compararAviso');
+            aviso.textContent = texto; aviso.classList.toggle('d-none', !texto);
+        }
+        function pct(n, t) { return t ? Math.round(n * 100 / t) + '%' : '-'; }
+        function principal(obj) {
+            const [clave, n] = Object.entries(obj || {}).sort((a, b) => b[1] - a[1])[0] || [];
+            return clave ? `${clave} (${n})` : '-';
+        }
+        function grafico(id, config) {
+            if (graficos[id]) graficos[id].destroy();
+            graficos[id] = new Chart(document.getElementById(id), config);
+        }
+        const color = i => paletaEmpresas[i % paletaEmpresas.length];
+
+        function dibujar() {
+            const lista = elegidas.map(c => porNombre[c]);
+            const contenido = document.getElementById('compararContenido');
+            if (lista.length < 2) { contenido.classList.add('d-none'); avisar('Elige al menos 2 compañías para comparar.'); return; }
+            avisar(''); contenido.classList.remove('d-none');
+
+            // Tabla: una fila por métrica, una columna por compañía; se resalta el valor más alto.
+            const filas = [
+                ['Anuncios', d => d.total, true],
+                ['Vigentes (siguen activos)', d => d.vigentes, true],
+                ['Videos', d => `${d.videos} · ${pct(d.videos, d.total)}`, false, d => d.videos],
+                ['Fotos', d => `${d.fotos} · ${pct(d.fotos, d.total)}`, false, d => d.fotos],
+                ['Textos', d => `${d.textos} · ${pct(d.textos, d.total)}`, false, d => d.textos],
+                ['En Meta / en Google', d => `${d.meta} / ${d.google}`],
+                ['Winning Ads (+30 días activos)', d => d.winning, true],
+                ['Nuevos en los últimos 7 días', d => d.nuevos7, true],
+                ['Días activos en promedio', d => d.dias_promedio ?? '-', true],
+                ['Producto principal', d => principal(Object.fromEntries(Object.entries(d.productos).filter(([k]) => k !== 'Sin clasificar')))],
+                ['Destino principal', d => principal(Object.fromEntries(Object.entries(d.destinos).filter(([k]) => k !== 'Sin dato')))],
+                ['Plataforma principal', d => principal(d.plataformas)],
+            ];
+            const tabla = document.getElementById('compararTabla');
+            tabla.innerHTML = '';
+            const thead = tabla.createTHead().insertRow();
+            thead.className = 'small text-muted';
+            thead.insertCell().outerHTML = '<th>Métrica</th>';
+            lista.forEach((d, i) => {
+                const th = document.createElement('th');
+                th.className = 'text-center';
+                th.innerHTML = `<span class="d-inline-block rounded-circle me-1" style="width:10px;height:10px;background:${color(i)}"></span>`;
+                th.append(document.createTextNode(d.compania));
+                thead.appendChild(th);
+            });
+            const tbody = tabla.createTBody();
+            filas.forEach(([nombre, valor, resaltar, numero]) => {
+                const tr = tbody.insertRow();
+                const td0 = tr.insertCell(); td0.className = 'small fw-semibold'; td0.textContent = nombre;
+                const nums = lista.map(d => Number((numero || valor)(d)) || 0);
+                const max = Math.max(...nums);
+                lista.forEach((d, i) => {
+                    const td = tr.insertCell();
+                    td.className = 'text-center small';
+                    td.textContent = valor(d);
+                    if ((resaltar || numero) && max > 0 && nums[i] === max && nums.filter(n => n === max).length < lista.length) {
+                        td.classList.add('fw-bold', 'text-primary');
+                    }
+                });
+            });
+
+            const opcionesBarra = (apilado, horizontal) => ({
+                responsive: true, maintainAspectRatio: false, indexAxis: horizontal ? 'y' : 'x',
+                plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 8 } } },
+                scales: { x: { stacked: apilado, beginAtZero: true, ticks: { precision: 0 } }, y: { stacked: apilado, beginAtZero: true, ticks: { precision: 0 } } },
+            });
+            grafico('compararFormatos', {
+                type: 'bar',
+                data: { labels: ['Videos', 'Fotos', 'Textos'],
+                        datasets: lista.map((d, i) => ({ label: d.compania, data: [d.videos, d.fotos, d.textos], backgroundColor: color(i), borderRadius: 4 })) },
+                options: opcionesBarra(false, false),
+            });
+
+            const totalesProd = {};
+            lista.forEach(d => Object.entries(d.productos).forEach(([p, n]) => { if (p !== 'Sin clasificar') totalesProd[p] = (totalesProd[p] || 0) + n; }));
+            const productos = Object.keys(totalesProd).sort((a, b) => totalesProd[b] - totalesProd[a]).slice(0, 8);
+            grafico('compararProductos', {
+                type: 'bar',
+                data: { labels: productos.length ? productos : ['Sin productos clasificados'],
+                        datasets: lista.map((d, i) => ({ label: d.compania, data: productos.map(p => d.productos[p] || 0), backgroundColor: color(i), borderRadius: 4 })) },
+                options: opcionesBarra(false, true),
+            });
+
+            const series = (historialData.series || []).filter(s => elegidas.includes(s.label));
+            const hayHistorial = (historialData.fechas || []).length >= 2 && series.length;
+            document.getElementById('compararHistorialVacio').classList.toggle('d-none', !!hayHistorial);
+            document.getElementById('compararHistorial').parentElement.classList.toggle('d-none', !hayHistorial);
+            if (hayHistorial) {
+                grafico('compararHistorial', {
+                    type: 'line',
+                    data: { labels: historialData.fechas,
+                            datasets: lista.map((d, i) => ({ label: d.compania, data: (series.find(s => s.label === d.compania) || {data: []}).data,
+                                                             borderColor: color(i), backgroundColor: color(i), tension: .3, borderWidth: 2, pointRadius: 2 })) },
+                    options: { responsive: true, maintainAspectRatio: false, spanGaps: true, interaction: { mode: 'index', intersect: false },
+                               plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 8 } } },
+                               scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } },
+                });
+            }
+
+            const destinos = [...new Set(lista.flatMap(d => Object.keys(d.destinos)))].sort((a, b) => (a === 'Sin dato') - (b === 'Sin dato'));
+            grafico('compararDestinos', {
+                type: 'bar',
+                data: { labels: lista.map(d => d.compania),
+                        datasets: destinos.map(dst => ({ label: dst, data: lista.map(d => d.destinos[dst] || 0), borderRadius: 4,
+                                                         backgroundColor: ({'WhatsApp': '#25d366', 'Sitio web': '#3b82f6', 'Messenger': '#0ea5e9', 'Instagram (mensaje)': '#e1306c', 'Instagram (perfil)': '#f472b6', 'Formulario': '#8b5cf6', 'Facebook': '#1877f2', 'Llamada': '#f59e0b', 'Sin enlace': '#94a3b8'})[dst] || '#cbd5e1' })) },
+                options: opcionesBarra(true, true),
+            });
+
+            const palabras = document.getElementById('compararPalabras');
+            palabras.innerHTML = '';
+            lista.forEach((d, i) => {
+                const col = document.createElement('div');
+                col.className = 'col-md-6 col-lg-4';
+                const titulo = document.createElement('div');
+                titulo.className = 'fw-semibold mb-1';
+                titulo.innerHTML = `<span class="d-inline-block rounded-circle me-1" style="width:10px;height:10px;background:${color(i)}"></span>`;
+                titulo.append(document.createTextNode(d.compania));
+                col.appendChild(titulo);
+                const caja = document.createElement('div');
+                caja.className = 'd-flex flex-wrap gap-1';
+                if (!d.palabras.length) caja.innerHTML = '<span class="small text-muted">Sin texto suficiente</span>';
+                d.palabras.forEach(([palabra, n]) => {
+                    const chip = document.createElement('span');
+                    chip.className = 'badge bg-primary-subtle text-primary-emphasis';
+                    chip.textContent = `${palabra} · ${n}`;
+                    caja.appendChild(chip);
+                });
+                col.appendChild(caja);
+                palabras.appendChild(col);
+            });
+        }
+
+        function cargarSheetJS() {
+            if (window.XLSX) return Promise.resolve();
+            return new Promise((ok, falla) => {
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+                script.onload = ok; script.onerror = () => falla(new Error('No se pudo cargar el generador de Excel'));
+                document.head.appendChild(script);
+            });
+        }
+        function tablaPorClave(lista, campo, nombreColumna, ocultar) {
+            const totales = {};
+            lista.forEach(d => Object.entries(d[campo] || {}).forEach(([k, n]) => { if (k !== ocultar) totales[k] = (totales[k] || 0) + n; }));
+            const claves = Object.keys(totales).sort((a, b) => totales[b] - totales[a]);
+            return [[nombreColumna, ...lista.map(d => d.compania)], ...claves.map(k => [k, ...lista.map(d => (d[campo] || {})[k] || 0)])];
+        }
+        async function exportar() {
+            const lista = elegidas.map(c => porNombre[c]).filter(Boolean);
+            if (lista.length < 2) { avisar('Elige al menos 2 compañías para exportar la comparación.'); return; }
+            const boton = document.getElementById('compararExportar');
+            const original = boton.innerHTML;
+            boton.disabled = true;
+            boton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Preparando…';
+            try {
+                await cargarSheetJS();
+                const fraccion = (n, t) => t ? Math.round(n * 1000 / t) / 10 : 0;
+                const sinOtros = (obj, ocultar) => Object.fromEntries(Object.entries(obj || {}).filter(([k]) => k !== ocultar));
+                const resumen = [
+                    ['Métrica', ...lista.map(d => d.compania)],
+                    ['Anuncios', ...lista.map(d => d.total)],
+                    ['Vigentes (siguen activos)', ...lista.map(d => d.vigentes)],
+                    ['Videos', ...lista.map(d => d.videos)],
+                    ['% Videos', ...lista.map(d => fraccion(d.videos, d.total))],
+                    ['Fotos', ...lista.map(d => d.fotos)],
+                    ['% Fotos', ...lista.map(d => fraccion(d.fotos, d.total))],
+                    ['Textos', ...lista.map(d => d.textos)],
+                    ['% Textos', ...lista.map(d => fraccion(d.textos, d.total))],
+                    ['En Meta', ...lista.map(d => d.meta)],
+                    ['En Google', ...lista.map(d => d.google)],
+                    ['Winning Ads (+30 días activos)', ...lista.map(d => d.winning)],
+                    ['Nuevos en los últimos 7 días', ...lista.map(d => d.nuevos7)],
+                    ['Días activos en promedio', ...lista.map(d => d.dias_promedio ?? '')],
+                    ['Producto principal', ...lista.map(d => principal(sinOtros(d.productos, 'Sin clasificar')))],
+                    ['Destino principal', ...lista.map(d => principal(sinOtros(d.destinos, 'Sin dato')))],
+                    ['Plataforma principal', ...lista.map(d => principal(d.plataformas))],
+                ];
+                const maxPalabras = Math.max(...lista.map(d => d.palabras.length), 1);
+                const palabras = [lista.map(d => d.compania),
+                                  ...Array.from({length: maxPalabras}, (_, i) => lista.map(d => d.palabras[i] ? `${d.palabras[i][0]} (${d.palabras[i][1]})` : ''))];
+                const series = (historialData.series || []);
+                const historial = [['Fecha', ...lista.map(d => d.compania)],
+                                   ...(historialData.fechas || []).map((f, i) => [f, ...lista.map(d => {
+                                       const s = series.find(x => x.label === d.compania); return s && s.data[i] != null ? s.data[i] : '';
+                                   })])];
+                const nombresFiltro = {q: 'Búsqueda', compania: 'Compañía', tiempo: 'Tiempo', duracion: 'Duración', estado: 'Estado',
+                                       plataforma: 'Plataforma', formato: 'Formato', fuente: 'Fuente', producto: 'Producto'};
+                const filtros = [['Filtro', 'Valor'], ['Generado', new Date().toLocaleString('es-VE')], ['Compañías comparadas', lista.map(d => d.compania).join(', ')]];
+                new URL(window.location.href).searchParams.forEach((v, k) => { if (v && nombresFiltro[k]) filtros.push([nombresFiltro[k], v]); });
+
+                const libro = XLSX.utils.book_new();
+                const hoja = (filas, nombre, anchos) => {
+                    const h = XLSX.utils.aoa_to_sheet(filas);
+                    h['!cols'] = (anchos || filas[0].map((_, i) => i === 0 ? 30 : 18)).map(w => ({wch: w}));
+                    XLSX.utils.book_append_sheet(libro, h, nombre);
+                };
+                hoja(resumen, 'Resumen');
+                hoja(tablaPorClave(lista, 'productos', 'Producto', 'Sin clasificar'), 'Productos');
+                hoja(tablaPorClave(lista, 'destinos', 'Destino'), 'Destinos');
+                hoja(tablaPorClave(lista, 'plataformas', 'Plataforma'), 'Plataformas');
+                hoja(palabras, 'Palabras', lista.map(() => 22));
+                if (historial.length > 1) hoja(historial, 'Historial activos');
+                hoja(filtros, 'Filtros', [24, 60]);
+                const fecha = new Date().toISOString().slice(0, 10);
+                const nombre = lista.length <= 3 ? lista.map(d => d.compania).join('_vs_') : `${lista.length}_companias`;
+                XLSX.writeFile(libro, `Comparacion_${nombre.replace(/[^\\w\\u00C0-\\u017F-]+/g, '_')}_${fecha}.xlsx`);
+            } catch (e) {
+                avisar('No se pudo generar el Excel: ' + e.message);
+            } finally {
+                boton.disabled = false;
+                boton.innerHTML = original;
+            }
+        }
+        document.getElementById('compararExportar').addEventListener('click', exportar);
+
+        // Los gráficos se dibujan al abrir la ventana (oculta, Chart.js no conoce el tamaño). Mientras está
+        // abierta, la selección queda en la URL para compartirla; al recargar con ?comparar= se abre sola.
+        const ventana = document.getElementById('modalComparar');
+        const guardarEnUrl = (conSeleccion) => {
+            const u = new URL(window.location.href);
+            u.searchParams.delete('comparar');
+            if (conSeleccion) elegidas.forEach(c => u.searchParams.append('comparar', c));
+            history.replaceState(null, '', u);
+        };
+        ventana.addEventListener('shown.bs.modal', () => { dibujar(); guardarEnUrl(true); });
+        ventana.addEventListener('hidden.bs.modal', () => guardarEnUrl(false));
+        if (url.searchParams.getAll('comparar').length) {
+            document.addEventListener('DOMContentLoaded', () => window.bootstrap && bootstrap.Modal.getOrCreateInstance(ventana).show());
+        }
+    })();
+    {% endif %}
+
     if (document.getElementById('destinosChart')) {
         const coloresDestino = {
             'WhatsApp': '#25d366', 'Sitio web': '#3b82f6', 'Messenger': '#0ea5e9', 'Instagram (mensaje)': '#e1306c',
@@ -3212,6 +3642,7 @@ def index():
 
     contador_palabras = Counter(palabras_encontradas)
     top_palabras = contador_palabras.most_common(20 if es_beta else 12)
+    comparativa = comparativa_empresas(anuncios, palabras_empresas) if es_beta else []
 
     keywords_chart_data = {
         "labels": [p[0].capitalize() for p in top_palabras],
@@ -3266,6 +3697,7 @@ def index():
         stats_empresas=stats_empresas,
         stats_empresas_vigentes=stats_empresas_vigentes,
         historial_data=historial_data,
+        comparativa=comparativa,
         destinos_data=destinos_data,
         iconos_destino=ICONOS_DESTINO,
         alerta_salud=alerta_salud,
