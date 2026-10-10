@@ -1025,7 +1025,7 @@ HTML_TEMPLATE = """
         function sinImagen(img) {
             const enlace = img.parentElement;
             enlace.classList.add('sin-imagen');
-            enlace.title = 'La vista previa ya no está disponible; abre el anuncio';
+            enlace.title = 'La vista previa ya no está disponible; clic para abrir el anuncio';
             enlace.innerHTML = '<i class="bi bi-image"></i>';
         }
     </script>
@@ -1165,6 +1165,29 @@ HTML_TEMPLATE = """
     actualizar();
 })();
 </script>
+{% endif %}
+
+{% if es_beta %}
+<!-- Modal: imagen completa de la vista previa de un anuncio -->
+<div class="modal fade" id="modalVistaPrevia" tabindex="-1" aria-labelledby="vistaPreviaTitulo">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content card-custom">
+            <div class="modal-header border-secondary border-opacity-25">
+                <h5 class="modal-title fw-bold" id="vistaPreviaTitulo"><i class="bi bi-image text-primary"></i> <span id="vistaPreviaCompania"></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+            </div>
+            <div class="modal-body text-center">
+                <img id="vistaPreviaImagen" src="" alt="Vista previa del anuncio" referrerpolicy="no-referrer"
+                     class="img-fluid rounded-3 shadow-sm" style="max-height: 70vh; object-fit: contain;">
+                <p id="vistaPreviaTexto" class="small text-muted text-start mt-3 mb-0"></p>
+            </div>
+            <div class="modal-footer border-secondary border-opacity-25">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cerrar</button>
+                <a id="vistaPreviaEnlace" href="#" target="_blank" rel="noopener" class="btn btn-sm btn-primary"><i class="bi bi-box-arrow-up-right"></i> Abrir anuncio</a>
+            </div>
+        </div>
+    </div>
+</div>
 {% endif %}
 
 <!-- Modal: Editor urls.txt en GitHub -->
@@ -1823,9 +1846,11 @@ HTML_TEMPLATE = """
                                 {% if es_beta %}
                                 <td class="celda-miniatura">
                                     {% if ad.imagen_url %}
-                                    <a href="{{ ad.link_individual }}" target="_blank" rel="noopener" class="miniatura" title="Ver anuncio">
+                                    <button type="button" class="miniatura border-0 p-0" title="Ver imagen completa"
+                                            data-imagen="{{ ad.imagen_url }}" data-enlace="{{ ad.link_individual }}"
+                                            data-compania="{{ ad.compania or '' }}" data-texto="{{ (ad.texto or ad.titulo or '')[:300] }}">
                                         <img src="{{ ad.imagen_url }}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="sinImagen(this)">
-                                    </a>
+                                    </button>
                                     {% else %}
                                     <span class="miniatura sin-imagen" title="Sin vista previa todavía"><i class="bi bi-image"></i></span>
                                     {% endif %}
@@ -2607,6 +2632,21 @@ HTML_TEMPLATE = """
             desplegable.addEventListener('hidden.bs.dropdown', () => {
                 if (cambiado) aplicar();
             });
+        });
+
+        // Clic en la miniatura: imagen completa en una ventana. Si la imagen caducó, se abre el anuncio.
+        document.addEventListener('click', ev => {
+            const boton = ev.target.closest('button.miniatura');
+            if (!boton) return;
+            if (boton.classList.contains('sin-imagen') || !window.bootstrap) {
+                window.open(boton.dataset.enlace, '_blank', 'noopener');
+                return;
+            }
+            document.getElementById('vistaPreviaImagen').src = boton.dataset.imagen;
+            document.getElementById('vistaPreviaCompania').textContent = boton.dataset.compania;
+            document.getElementById('vistaPreviaTexto').textContent = boton.dataset.texto;
+            document.getElementById('vistaPreviaEnlace').href = boton.dataset.enlace;
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('modalVistaPrevia')).show();
         });
 
         // Texto completo del anuncio al dejar el mouse encima; la espera evita que salte al pasar de largo.
