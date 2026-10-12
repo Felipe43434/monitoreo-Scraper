@@ -2,6 +2,7 @@ import os
 import io
 import json
 import hmac
+import hashlib
 import base64
 import re
 import unicodedata
@@ -587,6 +588,36 @@ def comparativa_empresas(anuncios, palabras_excluidas):
         resultado.append(d)
     return resultado
 
+def clave_campana(ad):
+    # Campaña = anuncios de la misma empresa que empezaron el mismo día con el mismo texto (variantes de
+    # imagen, formato o plataforma). Se identifica con un código corto para la URL (?campana=...).
+    inicio = parse_date_str(extraer_fecha_anuncio(ad)) or ''
+    texto = re.sub(r'\W+', ' ', str(ad.get('texto') or ad.get('titulo') or '').lower()).strip()[:60]
+    base = f"{(ad.get('compania') or '').strip()}|{inicio}|{texto}"
+    return hashlib.md5(base.encode('utf-8')).hexdigest()[:10]
+
+def registros_participacion(anuncios):
+    # Base de la "Participación Publicitaria" (Beta): se manda al navegador el período activo de cada anuncio
+    # y allí se calcula para el período elegido. Las variantes de una misma campaña (mismo inicio y texto)
+    # comparten la clave "g" y cuentan una sola vez.
+    registros, sin_fin = [], Counter()
+    for a in anuncios:
+        compania = (a.get('compania') or '').strip()
+        inicio = parse_date_str(a.get('fecha_display'))
+        if not compania or not inicio or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', inicio):
+            continue
+        fin = fecha_ultima_vista(a)
+        if not fin and not a.get('presente_en_meta'):
+            sin_fin[compania] += 1  # Retirado de Meta: no se sabe qué día se apagó.
+            continue
+        plataformas = [p for p in str(a.get('plataformas') or '').split(',') if p.strip()]
+        peso = 1 + min(0.5, 0.25 * max(0, len(plataformas) - 1))
+        if 'video' in str(a.get('formato') or '').lower() or (a.get('duracion_segundos') or 0) > 0:
+            peso *= 1.2
+        registros.append({'c': compania, 'i': inicio, 'f': fin, 'p': round(peso, 2), 'g': clave_campana(a),
+                          't': str(a.get('texto') or a.get('titulo') or '')[:90]})
+    return {'registros': registros, 'sin_fin': dict(sin_fin)}
+
 def estadisticas_por_empresa(anuncios):
     # Tabla "Empresas Monitoreadas": se cuenta sobre los anuncios ya filtrados para que
     # responda a los mismos filtros que el resto del panel.
@@ -1007,6 +1038,10 @@ HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="es" data-bs-theme="light">
 <head>
+    <script>
+        // El tema guardado se aplica antes de pintar la página: así el modo oscuro no da un destello blanco al recargar (p. ej. al quitar un filtro).
+        try { if (localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-bs-theme', 'dark'); } catch (e) {}
+    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gálac Ads Intelligence</title>
@@ -2080,6 +2115,7 @@ HTML_TEMPLATE = """
     <div class="card-custom p-3 mb-4 card-filter-container">
         <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end{% if n_extra %} mostrar-extra{% endif %}">
 <input type="hidden" name="pestana" id="pestanaActual" value="{{ pestana_activa }}">
+            {% if request.args.get('campana') %}<input type="hidden" name="campana" value="{{ request.args.get('campana') }}">{% endif %}
             <!-- 1. Buscar -->
             <div class="col-md-3 col-lg-2">
                 <label for="filtroBuscar" class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-search"></i> Buscar</label>
@@ -2237,7 +2273,7 @@ HTML_TEMPLATE = """
             </div>
 {{ filtro_duracion }}{{ filtros_plataforma_formato }}
         </form>
-        {% set nombres_filtro = {'q': 'Búsqueda', 'compania': 'Compañía', 'tiempo': 'Tiempo', 'duracion': 'Duración', 'estado': 'Estado', 'plataforma': 'Plataforma', 'formato': 'Formato', 'fuente': 'Fuente', 'producto': 'Producto'} %}
+        {% set nombres_filtro = {'q': 'Búsqueda', 'compania': 'Compañía', 'tiempo': 'Tiempo', 'duracion': 'Duración', 'estado': 'Estado', 'plataforma': 'Plataforma', 'formato': 'Formato', 'fuente': 'Fuente', 'producto': 'Producto', 'campana': 'Campaña'} %}
         {% set nombres_valor = {'7d': '7 días', '15d': '15 días', '30d': '30 días', '90d': '90 días', 'corta': '< 15s', 'media': '15s - 60s', 'larga': '> 60s', 'sin_video': 'Estático',
             'facebook': 'Facebook', 'instagram': 'Instagram', 'threads': 'Threads', 'messenger': 'Messenger', 'audience': 'Audience Net.', 'whatsapp': 'WhatsApp',
             'búsqueda de google': 'Búsqueda de Google', 'youtube': 'YouTube', 'red de display': 'Red de Display', 'google maps': 'Maps', 'google play': 'Play', 'google shopping': 'Shopping',
@@ -2248,8 +2284,8 @@ HTML_TEMPLATE = """
         <div class="d-flex flex-wrap align-items-center gap-2 mt-2 pt-2 border-top small">
             <span class="text-muted">{{ anuncios|length }} anuncio{{ 's' if anuncios|length != 1 }} con:</span>
             {% for clave, nombre, valor in chips %}
-            <a class="chip-filtro" href="{{ url_con_filtros(**{clave: request.args.getlist(clave)|reject('equalto', valor)|list}) }}" title="Quitar este filtro" aria-label="Quitar filtro {{ nombre }}: {{ nombres_valor.get(valor, valor) }}">
-                <span><span class="text-muted">{{ nombre }}:</span> {{ nombres_valor.get(valor, valor) }}</span><i class="bi bi-x" aria-hidden="true"></i>
+            <a class="chip-filtro" href="{{ url_con_filtros(**{clave: request.args.getlist(clave)|reject('equalto', valor)|list}) }}" title="Quitar este filtro" aria-label="Quitar filtro {{ nombre }}: {{ (campana_nombre if clave == 'campana' else nombres_valor.get(valor, valor)) }}">
+                <span><span class="text-muted">{{ nombre }}:</span> {{ (campana_nombre if clave == 'campana' else nombres_valor.get(valor, valor)) }}</span><i class="bi bi-x" aria-hidden="true"></i>
             </a>
             {% endfor %}
         </div>
@@ -2387,6 +2423,48 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
+            {% if es_beta %}
+            <!-- Participación publicitaria (Beta) -->
+            <div class="card-custom p-3 mb-4" id="tarjetaParticipacion">
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-2">
+                    <div style="max-width: 600px;">
+                        <h6 class="fw-bold mb-1"><i class="bi bi-pie-chart-fill"></i> Participación Publicitaria <span class="badge bg-warning text-dark">BETA</span></h6>
+                        <p class="small text-muted mb-0">Qué parte de la presencia publicitaria tiene cada empresa, según cuántos anuncios tuvo activos y durante cuántos días.</p>
+                    </div>
+                    <div>
+                        <label for="participacionDias" class="form-label small fw-semibold text-muted mb-1">Período</label>
+                        <select id="participacionDias" class="form-select form-select-sm">
+                            <option value="7">Últimos 7 días</option>
+                            <option value="30">Últimos 30 días</option>
+                            <option value="90">Últimos 90 días</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-2">
+                        <thead class="table-light">
+                            <tr class="small text-muted">
+                                <th>Empresa</th>
+                                <th class="text-center">Campañas</th>
+                                <th class="text-center" title="Días que cada campaña estuvo activa en el período, ponderados por plataformas y formato">Días-anuncio</th>
+                                <th>Participación</th>
+                            </tr>
+                        </thead>
+                        <tbody id="participacionCuerpo"></tbody>
+                    </table>
+                </div>
+                <details class="small text-muted">
+                    <summary>¿Cómo se calcula?</summary>
+                    <ul class="mb-0 mt-1 ps-3">
+                        <li><strong>Días-anuncio:</strong> días que cada anuncio estuvo activo dentro del período. Las variantes de una misma campaña (mismo día de inicio y mismo texto) cuentan una sola vez.</li>
+                        <li>Cada plataforma extra suma 25 % (hasta +50 %) y los videos suman 20 %, porque suelen costar más.</li>
+                        <li><strong>Participación:</strong> parte de los días-anuncio de todas las empresas.</li>
+                        <li>Usa los filtros del panel. Los anuncios retirados de Meta no se cuentan porque no se sabe qué día se apagaron{% if participacion_data.sin_fin %} ({{ participacion_data.sin_fin.values()|sum }} en total){% endif %}. Si Meta no dejó cargar todos los anuncios de una empresa (pasa con Fina), su participación queda por debajo.</li>
+                    </ul>
+                </details>
+            </div>
+            {% endif %}
+
             <!-- Tabla de Empresas Registradas -->
             <div class="card-custom overflow-hidden reveal-scroll">
                 <div class="p-3 bg-primary bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
@@ -2519,6 +2597,9 @@ HTML_TEMPLATE = """
                                 <td class="small text-muted" style="min-width: 320px; max-width: 440px;">
                                     {% set texto_ad = ad.texto or ad.titulo or 'Sin descripción' %}
                                     {% if texto_ad|length > largo_texto %}<span class="texto-completo" tabindex="0" data-bs-title="{{ texto_ad }}">{{ texto_ad[:largo_texto] }}...</span>{% else %}{{ texto_ad[:largo_texto] }}{% if (ad.texto or ad.titulo or '')|length > largo_texto %}...{% endif %}{% endif %}
+                                    {% if es_beta and ad.campana_total > 1 and not request.args.get('campana') %}
+                                    <div class="mt-1"><a class="small text-decoration-none" href="{{ url_con_filtros(campana=ad.campana, pestana='tab-ads') }}"><i class="bi bi-collection"></i> Ver los {{ ad.campana_total }} anuncios de esta campaña</a></div>
+                                    {% endif %}
                                     {% if ad.productos %}
                                     <div class="mt-1 d-flex flex-wrap gap-1">
                                         {% for p in ad.productos %}{% if p in productos_sel %}<span class="badge bg-primary text-white shadow-sm" style="font-size: 0.65rem;" title="Producto filtrado"><i class="bi bi-check-circle-fill"></i> {{ p }}</span>{% else %}<span class="badge bg-primary-subtle text-primary-emphasis{% if productos_sel %} opacity-50{% endif %}" style="font-size: 0.65rem;"><i class="bi bi-box-seam"></i> {{ p }}</span>{% endif %}{% endfor %}
@@ -3588,6 +3669,122 @@ HTML_TEMPLATE = """
     })();
     {% endif %}
 
+    {% if es_beta %}
+    // Participación publicitaria (Beta): días que cada campaña estuvo activa en el período (las variantes cuentan
+    // una vez), ponderados por plataformas y formato. Meta y Google no publican el gasto de anuncios comerciales.
+    const participacion = (function () {
+        const base = {{ participacion_data|tojson }};
+        let dias = 30;
+        try { dias = parseInt(localStorage.getItem('participacionDias'), 10) || 30; } catch (e) {}
+        const DIA = 86400000;
+        const fecha = t => { const [y, m, d] = t.split('-').map(Number); return Date.UTC(y, m - 1, d); };
+        function calcular() {
+            const ahora = new Date();
+            const hoy = Date.UTC(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+            const desde = hoy - (dias - 1) * DIA;
+            const grupos = {};
+            base.registros.forEach(r => {
+                const ini = Math.max(fecha(r.i), desde);
+                const fin = Math.min(r.f ? fecha(r.f) : hoy, hoy);
+                const activos = fin >= ini ? Math.round((fin - ini) / DIA) + 1 : 0;
+                if (!activos) return;
+                const g = grupos[r.g] || (grupos[r.g] = { id: r.g, c: r.c, inicio: r.i, texto: r.t, valor: 0, anuncios: 0 });
+                g.valor = Math.max(g.valor, activos * r.p);
+                g.anuncios += 1;
+            });
+            const porCompania = {};
+            Object.values(grupos).forEach(g => {
+                const e = porCompania[g.c] || (porCompania[g.c] = { compania: g.c, campanas: 0, anuncios: 0, diasAnuncio: 0, lista: [] });
+                e.campanas += 1;
+                e.lista.push(g);
+                e.anuncios += g.anuncios;
+                e.diasAnuncio += g.valor;
+            });
+            const total = Object.values(porCompania).reduce((suma, e) => suma + e.diasAnuncio, 0);
+            Object.values(porCompania).forEach(e => { e.pct = total ? Math.round(e.diasAnuncio * 1000 / total) / 10 : 0; });
+            return { porCompania, dias };
+        }
+        return {
+            calcular,
+            get dias() { return dias; },
+            vacio: { campanas: 0, anuncios: 0, diasAnuncio: 0, pct: 0 },
+            cambiarDias(valor) {
+                dias = valor;
+                try { localStorage.setItem('participacionDias', valor); } catch (e) {}
+                document.dispatchEvent(new Event('participacion-cambio'));
+            },
+        };
+    })();
+
+    (function tarjetaParticipacion() {
+        const cuerpo = document.getElementById('participacionCuerpo');
+        if (!cuerpo) return;
+        const selector = document.getElementById('participacionDias');
+        selector.value = String(participacion.dias);
+        function dibujar() {
+            const filas = Object.values(participacion.calcular().porCompania).sort((a, b) => b.diasAnuncio - a.diasAnuncio);
+            cuerpo.innerHTML = '';
+            if (!filas.length) {
+                cuerpo.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">No hay anuncios activos en el período con los filtros actuales.</td></tr>';
+                return;
+            }
+            filas.forEach(e => {
+                const tr = cuerpo.insertRow();
+                tr.innerHTML = `<td class="fw-bold"></td>
+                    <td class="text-center"><button type="button" class="btn btn-link btn-sm p-0 text-decoration-none" aria-expanded="false">${e.campanas} <i class="bi bi-chevron-down small" aria-hidden="true"></i></button></td>
+                    <td class="text-center">${Math.round(e.diasAnuncio).toLocaleString('es-VE')}</td>
+                    <td style="min-width: 220px;"><div class="d-flex align-items-center gap-2">
+                        <div class="progress flex-grow-1" style="height: 8px;" aria-hidden="true"><div class="progress-bar" style="width: ${e.pct}%;"></div></div>
+                        <span class="small fw-semibold text-nowrap">${e.pct.toLocaleString('es-VE')} %</span></div></td>`;
+                tr.cells[0].textContent = e.compania;
+                const boton = tr.cells[1].querySelector('button');
+                boton.setAttribute('aria-label', `Ver las ${e.campanas} campañas de ${e.compania}`);
+                boton.addEventListener('click', () => {
+                    const abierta = tr.nextElementSibling?.classList.contains('campanas-empresa');
+                    if (abierta) { tr.nextElementSibling.remove(); boton.setAttribute('aria-expanded', 'false'); return; }
+                    boton.setAttribute('aria-expanded', 'true');
+                    const detalle = document.createElement('tr');
+                    detalle.className = 'campanas-empresa';
+                    const celda = detalle.insertCell();
+                    celda.colSpan = 4;
+                    const lista = document.createElement('ul');
+                    lista.className = 'list-unstyled small mb-0 d-flex flex-column gap-1';
+                    e.lista.sort((a, b) => b.valor - a.valor).forEach(c => {
+                        const enlace = new URL(window.location.href);
+                        enlace.searchParams.set('campana', c.id);
+                        enlace.searchParams.set('pestana', 'tab-ads');
+                        enlace.searchParams.delete('msg');
+                        const li = document.createElement('li');
+                        li.className = 'd-flex flex-wrap align-items-center gap-2';
+                        const fecha = document.createElement('span');
+                        fecha.className = 'text-muted text-nowrap';
+                        fecha.textContent = 'Desde ' + c.inicio.split('-').reverse().join('/');
+                        const texto = document.createElement('span');
+                        texto.className = 'flex-grow-1 text-truncate';
+                        texto.style.maxWidth = '520px';
+                        texto.textContent = c.texto || 'Sin texto';
+                        texto.title = c.texto || '';
+                        const a = document.createElement('a');
+                        a.href = enlace.toString();
+                        a.className = 'text-nowrap text-decoration-none';
+                        a.innerHTML = '<i class="bi bi-funnel" aria-hidden="true"></i> ';
+                        a.append(`Ver ${c.anuncios === 1 ? 'el anuncio' : `los ${c.anuncios} anuncios`}`);
+                        li.append(fecha, texto, a);
+                        lista.appendChild(li);
+                    });
+                    celda.appendChild(lista);
+                    tr.after(detalle);
+                });
+            });
+        }
+        selector.addEventListener('change', () => participacion.cambiarDias(parseInt(selector.value, 10) || 30));
+        document.addEventListener('participacion-cambio', dibujar);
+        dibujar();
+    })();
+    {% else %}
+    const participacion = null;
+    {% endif %}
+
     // Comparar compañías: la selección vive en la URL (?comparar=A&comparar=B) para poder compartirla.
     (function compararCompanias() {
         const datos = {{ comparativa|tojson }};
@@ -3723,6 +3920,9 @@ HTML_TEMPLATE = """
         }
         const color = i => paletaEmpresas[i % paletaEmpresas.length];
 
+        document.addEventListener('participacion-cambio', () => {
+            if (!document.getElementById('compararContenido').classList.contains('d-none')) dibujar();
+        });
         function dibujar() {
             const lista = elegidas.map(c => porNombre[c]);
             const contenido = document.getElementById('compararContenido');
@@ -3731,9 +3931,15 @@ HTML_TEMPLATE = """
 
             // Tabla: una fila por métrica, una columna por compañía; se resalta el valor más alto.
             // [nombre, valor, resaltar, número para resaltar, qué anuncios se listan al desplegar, ordenar por días]
+            const reparto = participacion && participacion.calcular();
+            const est = d => (reparto && reparto.porCompania[d.compania]) || (participacion && participacion.vacio);
+            const filasParticipacion = participacion ? [
+                [`Participación publicitaria (${reparto.dias} días)`, d => `${est(d).pct.toLocaleString('es-VE')} %`, false, d => est(d).pct, ad => ad.vigente],
+            ] : [];
             const filas = [
                 ['Anuncios', d => d.total, true, null, () => true],
                 ['Vigentes (siguen activos)', d => d.vigentes, true, null, ad => ad.vigente],
+                ...filasParticipacion,
                 ['Videos', d => `${d.videos} · ${pct(d.videos, d.total)}`, false, d => d.videos, ad => ad.formato === 'video'],
                 ['Fotos', d => `${d.fotos} · ${pct(d.fotos, d.total)}`, false, d => d.fotos, ad => ad.formato === 'foto'],
                 ['Textos', d => `${d.textos} · ${pct(d.textos, d.total)}`, false, d => d.textos, ad => ad.formato === 'texto'],
@@ -3932,10 +4138,13 @@ HTML_TEMPLATE = """
                 await cargarSheetJS();
                 const fraccion = (n, t) => t ? Math.round(n * 1000 / t) / 10 : 0;
                 const sinOtros = (obj, ocultar) => Object.fromEntries(Object.entries(obj || {}).filter(([k]) => k !== ocultar));
+                const reparto = participacion && participacion.calcular();
+                const est = d => (reparto && reparto.porCompania[d.compania]) || (participacion && participacion.vacio);
                 const resumen = [
                     ['Métrica', ...lista.map(d => d.compania)],
                     ['Anuncios', ...lista.map(d => d.total)],
                     ['Vigentes (siguen activos)', ...lista.map(d => d.vigentes)],
+                    ...(reparto ? [[`Participación publicitaria (%, ${reparto.dias} días)`, ...lista.map(d => est(d).pct)]] : []),
                     ['Videos', ...lista.map(d => d.videos)],
                     ['% Videos', ...lista.map(d => fraccion(d.videos, d.total))],
                     ['Fotos', ...lista.map(d => d.fotos)],
@@ -3960,9 +4169,10 @@ HTML_TEMPLATE = """
                                        const s = series.find(x => x.label === d.compania); return s && s.data[i] != null ? s.data[i] : '';
                                    })])];
                 const nombresFiltro = {q: 'Búsqueda', compania: 'Compañía', tiempo: 'Tiempo', duracion: 'Duración', estado: 'Estado',
-                                       plataforma: 'Plataforma', formato: 'Formato', fuente: 'Fuente', producto: 'Producto'};
+                                       plataforma: 'Plataforma', formato: 'Formato', fuente: 'Fuente', producto: 'Producto', campana: 'Campaña'};
                 const filtros = [['Filtro', 'Valor'], ['Generado', new Date().toLocaleString('es-VE')], ['Compañías comparadas', lista.map(d => d.compania).join(', ')]];
                 new URL(window.location.href).searchParams.forEach((v, k) => { if (v && nombresFiltro[k]) filtros.push([nombresFiltro[k], v]); });
+                if (reparto) filtros.push(['Participación publicitaria: período', `Últimos ${reparto.dias} días`]);
 
                 const libro = XLSX.utils.book_new();
                 const hoja = (filas, nombre, anchos) => {
@@ -4599,6 +4809,22 @@ def index():
     if productos_sel:
         anuncios = [a for a in anuncios if coincide_producto(a['productos'], productos_sel)]
 
+    # Campañas (Beta): cada anuncio sabe a qué campaña pertenece y cuántos anuncios tiene esa campaña.
+    for a in anuncios:
+        a['campana'] = clave_campana(a)
+    anuncios_por_campana = Counter(a['campana'] for a in anuncios)
+    for a in anuncios:
+        a['campana_total'] = anuncios_por_campana[a['campana']]
+    campana_sel = request.args.get('campana', '').strip()
+    campana_nombre = ''
+    if campana_sel:
+        anuncios = [a for a in anuncios if a['campana'] == campana_sel]
+        if anuncios:
+            texto = str(anuncios[0].get('texto') or anuncios[0].get('titulo') or 'Sin texto')
+            campana_nombre = f"{anuncios[0].get('compania') or ''} · {texto[:45]}{'…' if len(texto) > 45 else ''}"
+        else:
+            campana_nombre = 'Sin anuncios con los filtros actuales'
+
     anuncios_winning = []
     anuncios_nuevos = []
     anuncios_retirados = []
@@ -4743,6 +4969,8 @@ def index():
         empresas_config=empresas_configuradas(raw_urls_content, raw_google_content) if usuario_actual() in USUARIOS_FORMULARIO_EMPRESAS else [],
         historial_data=historial_data,
         comparativa=comparativa,
+        campana_nombre=campana_nombre,
+        participacion_data=registros_participacion(anuncios) if usuario_actual() == USUARIO_BETA else {'registros': [], 'sin_fin': {}},
         destinos_data=destinos_data,
         iconos_destino=ICONOS_DESTINO,
         alerta_salud=alerta_salud,
@@ -5118,6 +5346,9 @@ def descargar_excel():
         productos_sel = [p.strip() for p in request.args.getlist('producto') if p.strip()]
         if productos_sel:
             df = df[[coincide_producto(p, productos_sel) for p in productos_por_fila]]
+        campana_sel = request.args.get('campana', '').strip()
+        if campana_sel:
+            df = df[[clave_campana(r) == campana_sel for r in df.to_dict('records')]]
 
         df['fecha_subida_detectada'] = df.apply(lambda row: extraer_fecha_anuncio(row.to_dict()), axis=1)
         df['dias_activo'] = df.apply(lambda r: calcular_dias_activo(r['fecha_subida_detectada'], fecha_ultima_vista(r.to_dict())), axis=1)
