@@ -1295,17 +1295,20 @@ HTML_TEMPLATE = """
         .diseno-v2 .badge-winning { background: linear-gradient(135deg, #b45309 0%, #c2410c 100%); }
         .diseno-v2 .badge-new { background-color: #4f46e5; }
         .diseno-v2 .badge.bg-info, .diseno-v2 .badge.bg-warning { color: #1e293b !important; }
-        .diseno-v2 .badge[style*="font-size"] { font-size: .72rem !important; }
+        .diseno-v2 .badge[style*="font-size"] { font-size: .75rem !important; }
         :root:not([data-bs-theme="dark"]) .diseno-v2 .text-warning:not(.navbar *) { color: #b45309 !important; }
         :root:not([data-bs-theme="dark"]) .diseno-v2 .text-info:not(.navbar *) { color: #0e7490 !important; }
         [data-bs-theme="dark"] .diseno-v2 .text-danger:not(.navbar *) { color: #f87171 !important; }
         .diseno-v2 .tabla-larga { max-height: 72vh; }
         .diseno-v2 .tabla-larga thead th { position: sticky; top: 0; z-index: 3; }
-        .diseno-v2 th.ordenable { cursor: pointer; user-select: none; white-space: nowrap; }
-        .diseno-v2 th.ordenable::after { content: "↕"; margin-left: .3rem; opacity: .35; font-size: .8em; }
-        .diseno-v2 th.ordenable[aria-sort="ascending"]::after { content: "▲"; opacity: .8; }
-        .diseno-v2 th.ordenable[aria-sort="descending"]::after { content: "▼"; opacity: .8; }
-        .diseno-v2 th.ordenable:focus-visible { outline: 2px solid var(--bs-primary); outline-offset: -2px; }
+        .diseno-v2 th.ordenable { white-space: nowrap; }
+        .diseno-v2 th.ordenable .boton-orden {
+            background: none; border: 0; padding: 0; color: inherit; font: inherit; text-transform: inherit; cursor: pointer; white-space: nowrap;
+        }
+        .diseno-v2 th.ordenable .boton-orden::after { content: "↕" / ""; margin-left: .3rem; opacity: .35; font-size: .8em; }
+        .diseno-v2 th.ordenable[aria-sort="ascending"] .boton-orden::after { content: "▲" / ""; opacity: .8; }
+        .diseno-v2 th.ordenable[aria-sort="descending"] .boton-orden::after { content: "▼" / ""; opacity: .8; }
+        .diseno-v2 .tooltip.tooltip-texto { pointer-events: auto; }
         .diseno-v2 .filtro-extra { display: none; order: 20; }
         .diseno-v2 .mostrar-extra .filtro-extra { display: block; }
         .diseno-v2 .chip-filtro {
@@ -1379,7 +1382,8 @@ HTML_TEMPLATE = """
             const enlace = img.parentElement;
             enlace.classList.add('sin-imagen');
             enlace.title = 'La vista previa ya no está disponible; clic para abrir el anuncio';
-            enlace.innerHTML = '<i class="bi bi-image"></i>';
+            enlace.setAttribute('aria-label', `Abrir el anuncio${enlace.dataset.compania ? ' de ' + enlace.dataset.compania : ''} en una pestaña nueva (sin vista previa)`);
+            enlace.innerHTML = '<i class="bi bi-image" aria-hidden="true"></i>';
         }
     </script>
 </head>
@@ -2901,16 +2905,82 @@ HTML_TEMPLATE = """
             '#14b8a6': '#0d9488', '#f472b6': '#db2777', '#ec4899': '#be185d', '#25d366': '#16a34a', '#a855f7': '#9333ea', '#f97316': '#ea580c',
         };
         const cambiarTono = c => typeof c === 'string' ? (tonoAccesible[c.toLowerCase()] || c) : c;
+        const formas = ['circle', 'rect', 'triangle', 'rectRot', 'star', 'crossRot', 'rectRounded', 'cross', 'dash', 'line'];
+        Chart.defaults.plugins.legend.labels.usePointStyle = true;
         Chart.register({
             id: 'coloresAccesibles',
             beforeUpdate(chart) {
-                chart.data.datasets.forEach(serie => ['backgroundColor', 'borderColor', 'pointBackgroundColor', 'pointBorderColor'].forEach(clave => {
-                    if (serie[clave] === undefined) return;
-                    serie[clave] = Array.isArray(serie[clave]) ? serie[clave].map(cambiarTono) : cambiarTono(serie[clave]);
-                }));
+                const porSector = ['doughnut', 'pie', 'polarArea'].includes(chart.config.type);
+                chart.data.datasets.forEach((serie, i) => {
+                    ['backgroundColor', 'borderColor', 'pointBackgroundColor', 'pointBorderColor'].forEach(clave => {
+                        if (serie[clave] === undefined) return;
+                        serie[clave] = Array.isArray(serie[clave]) ? serie[clave].map(cambiarTono) : cambiarTono(serie[clave]);
+                    });
+                    // Cada serie (o cada sector) con su forma en la leyenda: no se distingue solo por el color.
+                    if (serie.pointStyle === undefined) {
+                        serie.pointStyle = porSector ? (chart.data.labels || []).map((_, j) => formas[j % formas.length]) : formas[i % formas.length];
+                    }
+                });
             },
         });
     }
+
+    // Accesibilidad general (todos): se aplica al cargar y a todo lo que se agrega después (Comparar, editores...).
+    function mejorarAccesibilidad(raiz) {
+        const todos = sel => (raiz.matches?.(sel) ? [raiz] : []).concat([...raiz.querySelectorAll(sel)]);
+        todos('i.bi:not([aria-hidden])').forEach(i => i.setAttribute('aria-hidden', 'true'));
+        todos('a[target="_blank"]:not([data-aviso-pestana])').forEach(a => {
+            a.dataset.avisoPestana = '1';
+            if (a.hasAttribute('aria-label')) a.setAttribute('aria-label', a.getAttribute('aria-label') + ' (se abre en una pestaña nueva)');
+            else a.insertAdjacentHTML('beforeend', '<span class="visually-hidden"> (se abre en una pestaña nueva)</span>');
+        });
+        todos('thead th:not([scope])').forEach(th => th.setAttribute('scope', 'col'));
+        todos('[data-bs-toggle="dropdown"]:not([aria-haspopup])').forEach(b => {
+            b.setAttribute('aria-haspopup', 'true');
+            if (!b.hasAttribute('aria-expanded')) b.setAttribute('aria-expanded', 'false');
+        });
+        todos('[data-bs-toggle="tab"]:not([aria-controls])').forEach((b, i) => {
+            const panel = document.querySelector(b.dataset.bsTarget);
+            if (!panel) return;
+            if (!b.id) b.id = 'boton-' + panel.id;
+            b.setAttribute('aria-controls', panel.id);
+            panel.setAttribute('role', 'tabpanel');
+            panel.setAttribute('aria-labelledby', b.id);
+        });
+        todos('.table-responsive:not([role])').forEach(caja => {
+            const panel = caja.closest('.tab-pane');
+            const titulo = caja.closest('.card-custom:not(.modal-content)')?.querySelector('h6')?.innerText.trim()
+                || (panel && document.querySelector(`[data-bs-target="#${panel.id}"]`)?.innerText.trim())
+                || caja.closest('.modal')?.querySelector('.modal-title')?.innerText.trim() || 'Tabla';
+            caja.setAttribute('role', 'region');
+            caja.setAttribute('aria-label', titulo.replace(/\\s+/g, ' '));
+            caja.tabIndex = 0;
+            const tabla = caja.querySelector('table');
+            if (tabla && !tabla.caption) {
+                const leyenda = tabla.createCaption();
+                leyenda.className = 'visually-hidden';
+                leyenda.textContent = titulo.replace(/\\s+/g, ' ');
+            }
+        });
+    }
+    document.addEventListener('DOMContentLoaded', () => {
+        mejorarAccesibilidad(document.body);
+        new MutationObserver(cambios => cambios.forEach(c => c.addedNodes.forEach(n => {
+            if (n.nodeType === 1) mejorarAccesibilidad(n);
+        }))).observe(document.body, { childList: true, subtree: true });
+    });
+
+    // Desplegables con casillas (Compañías, Producto, Comparar): las flechas pasan de una casilla a otra.
+    document.addEventListener('keydown', e => {
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+        const menu = e.target.closest?.('.dropdown-menu');
+        if (!menu || e.target.type !== 'checkbox') return;
+        const casillas = [...menu.querySelectorAll('input[type="checkbox"]')];
+        const i = casillas.indexOf(e.target);
+        e.preventDefault();
+        e.stopPropagation();
+        casillas[(i + (e.key === 'ArrowDown' ? 1 : -1) + casillas.length) % casillas.length].focus();
+    }, true);
 
     // Al cerrar una ventana, el foco vuelve al botón que la abrió (o al menú del que salió).
     document.addEventListener('show.bs.modal', e => { e.target._origenFoco = document.activeElement; });
@@ -3265,9 +3335,27 @@ HTML_TEMPLATE = """
     // Texto completo del anuncio al dejar el mouse encima; la espera evita que salte al pasar de largo.
     document.addEventListener('DOMContentLoaded', () => {
         if (!window.bootstrap) return;
-        document.querySelectorAll('.texto-completo').forEach(el => new bootstrap.Tooltip(el, {
-            delay: { show: 700, hide: 100 }, placement: 'top', container: 'body', customClass: 'tooltip-texto',
-        }));
+        document.querySelectorAll('.texto-completo').forEach(el => {
+            const tip = new bootstrap.Tooltip(el, {
+                delay: { show: 700, hide: 100 }, placement: 'top', container: 'body', customClass: 'tooltip-texto',
+                trigger: disenoV2 ? 'manual' : 'hover focus',
+            });
+            if (!disenoV2) return;
+            let abrir = null, cerrar = null;
+            const mostrar = espera => { clearTimeout(cerrar); clearTimeout(abrir); abrir = setTimeout(() => tip.show(), espera); };
+            const ocultar = () => { clearTimeout(abrir); cerrar = setTimeout(() => tip.hide(), 200); };
+            el.addEventListener('mouseenter', () => mostrar(700));
+            el.addEventListener('mouseleave', ocultar);
+            el.addEventListener('focus', () => mostrar(0));
+            el.addEventListener('blur', ocultar);
+            el.addEventListener('inserted.bs.tooltip', () => {
+                const globo = tip.tip;
+                if (!globo || globo.dataset.conMouse) return;
+                globo.dataset.conMouse = '1';
+                globo.addEventListener('mouseenter', () => clearTimeout(cerrar));
+                globo.addEventListener('mouseleave', ocultar);
+            });
+        });
     });
 
     {% if es_beta %}
@@ -3297,17 +3385,25 @@ HTML_TEMPLATE = """
             m = t.match(/^-?\\d+/);
             return m ? Number(m[0]) : t.toLowerCase();
         };
+        const avisoOrden = document.createElement('div');
+        avisoOrden.className = 'visually-hidden';
+        avisoOrden.setAttribute('role', 'status');
+        document.body.appendChild(avisoOrden);
         document.querySelectorAll('.tabla-larga table').forEach(tabla => {
             const encabezados = [...tabla.tHead.rows[0].cells];
             encabezados.forEach((th, columna) => {
                 if (th.hasAttribute('data-sin-orden')) return;
                 th.classList.add('ordenable');
-                th.tabIndex = 0;
-                th.setAttribute('aria-sort', 'none');
+                const boton = document.createElement('button');
+                boton.type = 'button';
+                boton.className = 'boton-orden';
+                boton.append(...th.childNodes);
+                th.appendChild(boton);
                 const ordenar = () => {
                     const ascendente = th.getAttribute('aria-sort') !== 'ascending';
-                    encabezados.forEach(otro => otro.hasAttribute('aria-sort') && otro.setAttribute('aria-sort', 'none'));
+                    encabezados.forEach(otro => otro.removeAttribute('aria-sort'));
                     th.setAttribute('aria-sort', ascendente ? 'ascending' : 'descending');
+                    avisoOrden.textContent = `Ordenado por ${boton.innerText.trim()}, ${ascendente ? 'de menor a mayor' : 'de mayor a menor'}`;
                     const cuerpo = tabla.tBodies[0];
                     const filas = [...cuerpo.rows].filter(fila => fila.cells.length === encabezados.length);
                     filas.sort((a, b) => {
@@ -3317,8 +3413,7 @@ HTML_TEMPLATE = """
                     });
                     filas.forEach(fila => cuerpo.appendChild(fila));
                 };
-                th.addEventListener('click', ordenar);
-                th.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ordenar(); } });
+                boton.addEventListener('click', ordenar);
             });
         });
     })();
