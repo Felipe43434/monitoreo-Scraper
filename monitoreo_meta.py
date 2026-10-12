@@ -484,6 +484,9 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
 
     print("📜 Desplazando y cargando creatividades de Meta...")
     if por_pagina:
+        # La primera página (hasta 30 anuncios) viene dentro del HTML: se cuenta antes de decidir si
+        # hace falta seguir cargando, para no recargar empresas que ya están completas.
+        oficiales.update(oficiales_desde_html(page.content()))
         cargar_todos_los_anuncios(page, url_final, oficiales, limitado)
     else:
         prev_ads_count = 0
@@ -808,6 +811,7 @@ def cargar_todos_los_anuncios(page, url, oficiales, limitado):
                 time.sleep(10)
                 page.goto(url, wait_until="domcontentloaded", timeout=90000)
                 time.sleep(3)
+                oficiales.update(oficiales_desde_html(page.content()))
                 sin_cambio = 0
                 continue
             break
