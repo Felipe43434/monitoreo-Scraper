@@ -53,6 +53,14 @@ FUNCIONES_NUEVAS = {
     'editor_productos': '2026-10-10',
     'miniaturas': '2026-10-10',
     'texto_completo': '2026-10-10',
+    'comparar': '2026-10-11',
+    'mas_longevos': '2026-10-11',
+    'mas_filtros': '2026-10-11',
+    'historial_activos': '2026-10-11',
+    'destinos': '2026-10-11',
+    'formulario_empresas': '2026-10-11',
+    'salud': '2026-10-11',
+    'buscar_termino': '2026-10-11',
 }
 
 def hoy_venezuela():
@@ -75,8 +83,7 @@ URLS_GOOGLE_FILE_PATH = "urls_google.txt"
 PRODUCTOS_FILE_PATH = "productos.txt"
 SIN_CLASIFICAR = "Sin clasificar"
 
-DIAS_WINNING_AD = 30
-DIAS_LONGEVO = 45  # Funciones Beta: "Más Longevos" reemplaza a "Winning Ads" con un umbral más exigente
+DIAS_LONGEVO = 45  # "Más Longevos": anuncios activos desde hace al menos estos días
 
 MESES_DICT = {
     'ene': '01', 'feb': '02', 'mar': '03', 'abr': '04', 'may': '05', 'jun': '06',
@@ -146,9 +153,8 @@ def editor_urls_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# Panel "Salud de los Bots": por ahora solo Funciones Beta. Al liberarlo se agrega USUARIO_ADMIN
-# (y la entrada en FUNCIONES_NUEVAS para que el Administrador vea la etiqueta NEW).
-USUARIOS_SALUD = (USUARIO_BETA,)
+# Panel "Salud de los Bots": solo el Administrador (y Funciones Beta).
+USUARIOS_SALUD = (USUARIO_ADMIN, USUARIO_BETA)
 
 def salud_required(f):
     @wraps(f)
@@ -510,7 +516,7 @@ def historial_activos(companias_sel, fuente, companias_bloqueadas, dias=90, maxi
             'series': [{'label': c, 'data': [valores.get((f, c)) for f in fechas]} for c in companias]}
 
 def comparativa_empresas(anuncios, palabras_excluidas):
-    # Pestaña "Comparar" (Beta): métricas por empresa sobre los anuncios ya filtrados. El navegador
+    # Pestaña "Comparar": métricas por empresa sobre los anuncios ya filtrados. El navegador
     # muestra solo las empresas elegidas, sin recargar la página.
     datos = {}
     for a in anuncios:
@@ -616,9 +622,9 @@ def parse_urls_google(raw_text):
             items.append({'nombre_flask': parts[0], 'dominio': parts[1].lower()})
     return items
 
-# ---------- Formulario de empresas (Beta): agregar / editar / eliminar sin escribir el formato a mano ----------
-# Por ahora solo Funciones Beta; al liberarlo, todos los usuarios podrán usarlo (pedido del 10-oct-2026).
-USUARIOS_FORMULARIO_EMPRESAS = (USUARIO_BETA,)
+# ---------- Formulario de empresas: agregar / editar / eliminar sin escribir el formato a mano ----------
+# Todos los usuarios pueden usarlo (pedido del 10-oct-2026).
+USUARIOS_FORMULARIO_EMPRESAS = tuple(USUARIOS)
 
 URL_PAGINA_META = ("https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL"
                    "&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id={}")
@@ -1078,7 +1084,7 @@ HTML_TEMPLATE = """
             background-color: rgba(255, 255, 255, 0.15);
         }
 
-        /* ===== Diseño v2: solo para Funciones Beta (clase en <body>) ===== */
+        /* ===== Diseño v2 (clase en <body>) ===== */
         .diseno-v2 {
             --radius: 14px;
             --ease-out: cubic-bezier(.22, 1, .36, 1);
@@ -1213,7 +1219,7 @@ HTML_TEMPLATE = """
                 }
             }
         }
-        /* Filtros automáticos (Beta): tras recargar por un filtro solo se animan los resultados,
+        /* Filtros automáticos: tras recargar por un filtro solo se animan los resultados,
            no la cabecera, y mientras carga se atenúa el contenido. */
         .diseno-v2.filtro-recargado .kpi-row > *,
         .diseno-v2.filtro-recargado .card-filter-container,
@@ -1290,7 +1296,7 @@ HTML_TEMPLATE = """
             .diseno-v2 .badge-new { animation: none; }
             .diseno-v2 .card-custom:hover, .diseno-v2 .btn:hover { translate: none; }
         }
-        /* ===== Correcciones de diseño y accesibilidad (Beta) ===== */
+        /* ===== Correcciones de diseño y accesibilidad ===== */
         .diseno-v2 .badge-active { background-color: #047857; }
         .diseno-v2 .badge-winning { background: linear-gradient(135deg, #b45309 0%, #c2410c 100%); }
         .diseno-v2 .badge-new { background-color: #4f46e5; }
@@ -1371,11 +1377,9 @@ HTML_TEMPLATE = """
             .diseno-v2 .navbar-brand > i { display: none; }
         }
     </style>
-    {% if es_beta %}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    {% endif %}
     <script>
         // Vista previa caducada o rota (las URLs de Meta vencen en unos días): se muestra un ícono.
         function sinImagen(img) {
@@ -1387,10 +1391,10 @@ HTML_TEMPLATE = """
         }
     </script>
 </head>
-<body class="{% if es_beta %}diseno-v2{% endif %}">
+<body class="diseno-v2">
 <a href="#contenido" class="visually-hidden-focusable btn btn-primary position-absolute top-0 start-0 m-2" style="z-index: 2000;">Saltar al contenido</a>
-{% set c_win = 'warning' if es_beta else 'danger' %}
-{% if es_beta %}<script>try { if (sessionStorage.getItem('filtroAuto')) document.body.classList.add('filtro-recargado'); } catch (e) {}</script>{% endif %}
+{% set c_win = 'warning' %}
+<script>try { if (sessionStorage.getItem('filtroAuto')) document.body.classList.add('filtro-recargado'); } catch (e) {}</script>
 
 <nav class="navbar navbar-expand-lg navbar-dark px-3 py-2 sticky-top">
     <div class="container-fluid">
@@ -1399,27 +1403,12 @@ HTML_TEMPLATE = """
             <span class="fw-bold tracking-tight">Gálac Ads Intelligence</span>
             {% if es_beta %}<span class="badge bg-warning text-dark" title="Estás viendo funciones que aún no están disponibles para los demás usuarios">BETA</span>{% endif %}
         </a>
-        {% if es_beta %}
         <button class="navbar-toggler border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#navAcciones" aria-controls="navAcciones" aria-expanded="false" aria-label="Mostrar menú">
             <span class="navbar-toggler-icon"></span>
         </button>
         <div class="collapse navbar-collapse" id="navAcciones">
-        {% endif %}
-        <div class="d-flex {% if es_beta %}flex-wrap py-2 py-lg-0 {% endif %}align-items-center gap-2 ms-auto">
+        <div class="d-flex flex-wrap py-2 py-lg-0 align-items-center gap-2 ms-auto">
             
-            {% if not es_beta %}
-            <button class="btn btn-sm btn-outline-light d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalConfigUrls">
-                {% if puede_editar_urls or usa_formulario_empresas %}
-                <i class="bi bi-file-earmark-code fs-6"></i> URLs ({{ config_urls|length + config_google|length }})
-                {% else %}
-                <i class="bi bi-box-seam fs-6"></i> Productos ({{ categorias_config|length }}) {{ nuevo('editor_productos') }}
-                {% endif %}
-            </button>
-
-            <button class="btn btn-sm btn-outline-danger d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#modalBlockedCompanies">
-                <i class="bi bi-slash-circle"></i> Bloqueadas ({{ companias_bloqueadas|length }})
-            </button>
-            {% endif %}
 
             <div class="sync-container d-flex flex-column gap-1 ms-1">
                 <form action="/lanzar_scraper" method="POST" id="scraperForm" onsubmit="startInlineScraping(event)" class="d-flex align-items-center gap-2 m-0">
@@ -1461,7 +1450,7 @@ HTML_TEMPLATE = """
                     {% if ve_salud %}
                     <li>
                         <a class="dropdown-item d-flex align-items-center gap-2" href="/salud">
-                            <i class="bi bi-heart-pulse"></i> Salud de los Bots
+                            <i class="bi bi-heart-pulse"></i> Salud de los Bots {{ nuevo('salud') }}
                             {% if alerta_salud %}<span class="badge rounded-pill bg-warning text-dark ms-auto" title="Hay una corrida que revisar">!</span>{% endif %}
                         </a>
                     </li>
@@ -1473,7 +1462,6 @@ HTML_TEMPLATE = """
                         </a>
                     </li>
                     {% endif %}
-                    {% if es_beta %}
                     <li><hr class="dropdown-divider"></li>
                     <li><h6 class="dropdown-header">Configuración</h6></li>
                     <li>
@@ -1487,7 +1475,6 @@ HTML_TEMPLATE = """
                             <span class="badge rounded-pill bg-secondary ms-auto">{{ companias_bloqueadas|length }}</span>
                         </button>
                     </li>
-                    {% endif %}
                     <li><hr class="dropdown-divider"></li>
                     <li><h6 class="dropdown-header">Apariencia</h6></li>
                     <li>
@@ -1504,7 +1491,7 @@ HTML_TEMPLATE = """
                 </ul>
             </div>
         </div>
-        {% if es_beta %}</div>{% endif %}
+</div>
     </div>
 </nav>
 
@@ -1575,13 +1562,12 @@ HTML_TEMPLATE = """
     </div>
 </div>
 
-{% if es_beta %}
-<!-- Modal: Comparar compañías (Beta). Las compañías se eligen dentro de la ventana. -->
+<!-- Modal: Comparar compañías. Las compañías se eligen dentro de la ventana. -->
 <div class="modal fade" id="modalComparar" tabindex="-1" aria-labelledby="compararTitulo">
     <div class="modal-dialog modal-xl modal-fullscreen-lg-down">
         <div class="modal-content card-custom">
             <div class="modal-header border-secondary border-opacity-25">
-                <h5 class="modal-title fw-bold" id="compararTitulo"><i class="bi bi-layout-split text-primary"></i> Comparar Compañías <span class="badge bg-warning text-dark fs-6 align-middle">BETA</span></h5>
+                <h5 class="modal-title fw-bold" id="compararTitulo"><i class="bi bi-layout-split text-primary"></i> Comparar Compañías</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
             </div>
             <div class="modal-body">
@@ -1646,14 +1632,13 @@ HTML_TEMPLATE = """
         </div>
     </div>
 </div>
-{% endif %}
 
 <!-- Modal: Editor urls.txt en GitHub -->
 <div class="modal fade" id="modalConfigUrls" tabindex="-1" aria-labelledby="configUrlsTitulo">
     <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content card-custom">
             <div class="modal-header border-secondary border-opacity-25">
-                <h5 class="modal-title fw-bold" id="configUrlsTitulo"><i class="bi bi-file-earmark-text text-primary"></i> {% if es_beta %}Empresas, URLs y productos{% elif puede_editar_urls or usa_formulario_empresas %}Editor de URLs (GitHub){% else %}Categorías de producto{% endif %}</h5>
+                <h5 class="modal-title fw-bold" id="configUrlsTitulo"><i class="bi bi-file-earmark-text text-primary"></i> Empresas, URLs y productos</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
             </div>
             <div class="modal-body p-4">
@@ -1662,7 +1647,7 @@ HTML_TEMPLATE = """
                     {% if usa_formulario_empresas %}
                     <li class="nav-item">
                         <button class="nav-link active fw-semibold" data-bs-toggle="tab" data-bs-target="#urls-tab-empresas" type="button">
-                            <i class="bi bi-buildings"></i> Empresas ({{ empresas_config|length }}) <span class="badge bg-warning text-dark">BETA</span>
+                            <i class="bi bi-buildings"></i> Empresas ({{ empresas_config|length }}) {{ nuevo('formulario_empresas') }}
                         </button>
                     </li>
                     {% endif %}
@@ -1987,8 +1972,7 @@ HTML_TEMPLATE = """
     </div>
 </div>
 
-{% if es_beta %}
-<!-- Modal: confirmar el bloqueo de una compañía (Beta) -->
+<!-- Modal: confirmar el bloqueo de una compañía -->
 <div class="modal fade" id="modalBloquear" tabindex="-1" aria-labelledby="modalBloquearTitulo">
     <div class="modal-dialog modal-dialog-centered">
         <form class="modal-content card-custom" action="/bloquear_compania" method="POST">
@@ -2008,12 +1992,11 @@ HTML_TEMPLATE = """
         </form>
     </div>
 </div>
-{% endif %}
 
 <main id="contenido" class="container-fluid px-4 py-4" tabindex="-1">
     <h1 class="visually-hidden">Gálac Ads Intelligence: anuncios de la competencia</h1>
 
-    {% if msg and es_beta %}
+    {% if msg %}
     <div class="alert alert-dismissible fade show aviso-destacado d-flex align-items-center gap-3" role="status">
         <i class="bi bi-info-circle-fill fs-4 flex-shrink-0" aria-hidden="true"></i>
         <div class="fw-semibold">{{ msg }}</div>
@@ -2040,8 +2023,8 @@ HTML_TEMPLATE = """
         <div class="col-6 col-md-4 col-xl">
             <div class="card-custom p-3 h-100">
                 <div class="d-flex justify-content-between align-items-center">
-                    <span class="stat-label">{{ 'Más Longevos' if es_beta else 'Winning Ads' }}</span>
-                    <i class="bi {{ 'bi-hourglass-split' if es_beta else 'bi-fire' }} text-{{ c_win }} fs-5"></i>
+                    <span class="stat-label">Más Longevos</span>
+                    <i class="bi bi-hourglass-split text-{{ c_win }} fs-5"></i>
                 </div>
                 <div class="stat-value text-{{ c_win }}">{{ total_winning }}</div>
             </div>
@@ -2076,8 +2059,8 @@ HTML_TEMPLATE = """
     </div>
 
     {% set pestanas_validas = ['tab-charts', 'tab-ads', 'tab-winning', 'tab-retirados', 'tab-new', 'tab-keywords'] %}
-    {% set pestana_activa = request.args.get('pestana') if es_beta and request.args.get('pestana') in pestanas_validas else 'tab-charts' %}
-    {# Miniatura del anuncio (Beta): clic = imagen completa en una ventana; se usa en todas las tablas de anuncios. #}
+    {% set pestana_activa = request.args.get('pestana') if request.args.get('pestana') in pestanas_validas else 'tab-charts' %}
+    {# Miniatura del anuncio: clic = imagen completa en una ventana; se usa en todas las tablas de anuncios. #}
     {% macro celda_miniatura(ad) %}
     <td class="celda-miniatura">
         {% if ad.id and (ad.tiene_miniatura or ad.imagen_url) %}
@@ -2095,8 +2078,8 @@ HTML_TEMPLATE = """
     <!-- Panel de Filtros -->
     {% set n_extra = [request.args.get('duracion', 'todas') not in ('', 'todas'), request.args.get('plataforma', '') != '', request.args.get('formato', '') != '']|select|list|length %}
     <div class="card-custom p-3 mb-4 card-filter-container">
-        <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end{% if es_beta and n_extra %} mostrar-extra{% endif %}">
-            {% if es_beta %}<input type="hidden" name="pestana" id="pestanaActual" value="{{ pestana_activa }}">{% endif %}
+        <form method="GET" action="/" id="filterForm" class="row g-2 align-items-end{% if n_extra %} mostrar-extra{% endif %}">
+<input type="hidden" name="pestana" id="pestanaActual" value="{{ pestana_activa }}">
             <!-- 1. Buscar -->
             <div class="col-md-3 col-lg-2">
                 <label for="filtroBuscar" class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-search"></i> Buscar</label>
@@ -2105,7 +2088,7 @@ HTML_TEMPLATE = """
 
             <!-- 2. Selección Múltiple Compañías -->
             <div class="col-md-3 col-lg-2">
-                {% set todas_companias = es_beta and lista_companias and lista_companias|reject('in', companias_sel)|list|length == 0 %}
+                {% set todas_companias = lista_companias and lista_companias|reject('in', companias_sel)|list|length == 0 %}
                 <label id="etiquetaCompanias" class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-building"></i> Compañías ({% if companias_sel and not todas_companias %}{{ companias_sel|length }}{% else %}Todas{% endif %})</label>
                 <div class="dropdown">
                     <button id="btnCompanias" aria-labelledby="etiquetaCompanias btnCompanias" aria-expanded="false" class="form-select form-select-sm text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
@@ -2119,13 +2102,8 @@ HTML_TEMPLATE = """
                     </button>
                     <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow-lg">
                         <div class="form-check pb-1 mb-1 border-bottom">
-                            {% if es_beta %}
                             <input class="form-check-input" type="checkbox" id="selectAllCompanies" {% if not companias_sel or todas_companias %}checked{% endif %}>
                             <label class="form-check-label small fw-bold" for="selectAllCompanies">Todas</label>
-                            {% else %}
-                            <input class="form-check-input" type="checkbox" id="selectAllCompanies" onchange="toggleAllCompanies(this)">
-                            <label class="form-check-label small fw-bold" for="selectAllCompanies">Seleccionar Todo</label>
-                            {% endif %}
                         </div>
                         {% for comp in lista_companias %}
                         <div class="form-check">
@@ -2151,7 +2129,7 @@ HTML_TEMPLATE = """
 
 {% set filtro_duracion %}
             <!-- 4. Filtro Duración del Video -->
-            <div class="col-6 col-md-2 col-lg-1{% if es_beta %} filtro-extra{% endif %}">
+            <div class="col-6 col-md-2 col-lg-1 filtro-extra">
                 <label for="filtroDuracion" class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-stopwatch"></i> Duración</label>
                 <select name="duracion" id="filtroDuracion" class="form-select form-select-sm">
                     <option value="todas" {% if request.args.get('duracion', 'todas') == 'todas' %}selected{% endif %}>Todas</option>
@@ -2162,7 +2140,7 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
-{% endset %}{% if not es_beta %}{{ filtro_duracion }}{% endif %}
+{% endset %}
 
             <!-- 5. Filtro Estado -->
             <div class="col-6 col-md-2 col-lg-1">
@@ -2176,7 +2154,7 @@ HTML_TEMPLATE = """
 
 {% set filtros_plataforma_formato %}
             <!-- 6. Filtro Plataforma -->
-            <div class="col-6 col-md-3 col-lg-2{% if es_beta %} filtro-extra{% endif %}">
+            <div class="col-6 col-md-3 col-lg-2 filtro-extra">
                 <label for="filtroPlataforma" class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-share"></i> Plataforma</label>
                 <select name="plataforma" id="filtroPlataforma" class="form-select form-select-sm">
                     <option value="">Todas</option>
@@ -2200,7 +2178,7 @@ HTML_TEMPLATE = """
             </div>
 
             <!-- 7. Filtro Formato -->
-            <div class="col-6 col-md-3 col-lg-1{% if es_beta %} filtro-extra{% endif %}">
+            <div class="col-6 col-md-3 col-lg-1 filtro-extra">
                 <label for="filtroFormato" class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-play-circle"></i> Formato</label>
                 <select name="formato" id="filtroFormato" class="form-select form-select-sm">
                     <option value="">Todos</option>
@@ -2212,7 +2190,7 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
-{% endset %}{% if not es_beta %}{{ filtros_plataforma_formato }}{% endif %}
+{% endset %}
 
             <div class="col-6 col-md-3 col-lg-1">
                 <label for="filtroFuente" class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-diagram-3"></i> Fuente</label>
@@ -2246,29 +2224,19 @@ HTML_TEMPLATE = """
             </div>
 
             <!-- 8. Botones de Acción -->
-            <div class="col-12 {{ 'col-lg-auto flex-wrap' if es_beta else 'col-lg-2' }} d-flex gap-1">
-                {% if es_beta %}
+            <div class="col-12 col-lg-auto flex-wrap d-flex gap-1">
                 <span id="estadoFiltros" class="small text-muted d-none align-items-center justify-content-center gap-1 px-1 text-nowrap" role="status"></span>
                 <button type="button" id="btnMasFiltros" aria-controls="filtroDuracion filtroPlataforma filtroFormato" class="btn btn-sm btn-outline-secondary text-nowrap d-flex align-items-center gap-1" aria-expanded="{{ 'true' if n_extra else 'false' }}" title="Duración, plataforma y formato">
-                    <i class="bi bi-sliders"></i> Más filtros{% if n_extra %} ({{ n_extra }}){% endif %}
+                    <i class="bi bi-sliders"></i> Más filtros{% if n_extra %} ({{ n_extra }}){% endif %} {{ nuevo('mas_filtros') }}
                 </button>
-                {% else %}
-                <button type="submit" class="btn btn-sm btn-primary w-100"><i class="bi bi-funnel"></i> Filtrar</button>
-                {% endif %}
-                {% if es_beta %}
                 <a href="/?pestana={{ pestana_activa }}" id="limpiarFiltros" class="btn btn-sm btn-outline-secondary text-nowrap d-flex align-items-center gap-1" title="Quitar todos los filtros"><i class="bi bi-trash3"></i> Limpiar</a>
                 <a href="/descargar_excel?{{ request.query_string.decode() }}" class="btn btn-sm btn-success text-nowrap d-flex align-items-center gap-1" title="Descargar los anuncios filtrados en Excel">
                     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="1" width="14" height="14" rx="2.5" fill="#fff"/><path d="M5.3 4.6l5.4 6.8M10.7 4.6l-5.4 6.8" stroke="#107C41" stroke-width="1.9" stroke-linecap="round"/></svg>
                     Exportar a Excel
                 </a>
-                {% else %}
-                <a href="/" class="btn btn-sm btn-outline-secondary" title="Limpiar filtros" aria-label="Limpiar filtros"><i class="bi bi-arrow-counterclockwise"></i></a>
-                <a href="/descargar_excel?{{ request.query_string.decode() }}" class="btn btn-sm btn-success text-nowrap" title="Descargar Excel" aria-label="Descargar Excel"><i class="bi bi-file-earmark-excel"></i></a>
-                {% endif %}
             </div>
-            {% if es_beta %}{{ filtro_duracion }}{{ filtros_plataforma_formato }}{% endif %}
+{{ filtro_duracion }}{{ filtros_plataforma_formato }}
         </form>
-        {% if es_beta %}
         {% set nombres_filtro = {'q': 'Búsqueda', 'compania': 'Compañía', 'tiempo': 'Tiempo', 'duracion': 'Duración', 'estado': 'Estado', 'plataforma': 'Plataforma', 'formato': 'Formato', 'fuente': 'Fuente', 'producto': 'Producto'} %}
         {% set nombres_valor = {'7d': '7 días', '15d': '15 días', '30d': '30 días', '90d': '90 días', 'corta': '< 15s', 'media': '15s - 60s', 'larga': '> 60s', 'sin_video': 'Estático',
             'facebook': 'Facebook', 'instagram': 'Instagram', 'threads': 'Threads', 'messenger': 'Messenger', 'audience': 'Audience Net.', 'whatsapp': 'WhatsApp',
@@ -2286,12 +2254,11 @@ HTML_TEMPLATE = """
             {% endfor %}
         </div>
         {% endif %}
-        {% endif %}
     </div>
 
     <!-- Pestañas -->
-    {% if es_beta %}<div class="d-flex flex-wrap align-items-center gap-2 mb-3 barra-pestanas">{% endif %}
-    <ul class="nav nav-tabs {{ 'mb-0 flex-grow-1' if es_beta else 'mb-3' }}" id="mainTab" role="tablist">
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3 barra-pestanas">
+    <ul class="nav nav-tabs mb-0 flex-grow-1" id="mainTab" role="tablist">
         <li class="nav-item">
             <button class="nav-link {% if pestana_activa == 'tab-charts' %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-charts" type="button">
                 <i class="bi bi-bar-chart-line"></i> Vista General & Tendencias
@@ -2304,7 +2271,7 @@ HTML_TEMPLATE = """
         </li>
         <li class="nav-item">
             <button class="nav-link {% if pestana_activa == 'tab-winning' %}active {% endif %}fw-semibold position-relative text-{{ c_win }}" data-bs-toggle="tab" data-bs-target="#tab-winning" type="button">
-                {% if es_beta %}<i class="bi bi-hourglass-split"></i> Más Longevos{% else %}<i class="bi bi-fire"></i> Winning Ads{% endif %}
+<i class="bi bi-hourglass-split"></i> Más Longevos {{ nuevo('mas_longevos') }}
                 {% if total_winning > 0 %}
                 <span class="badge rounded-pill bg-{{ c_win }} ms-1">{{ total_winning }}</span>
                 {% endif %}
@@ -2313,7 +2280,7 @@ HTML_TEMPLATE = """
         <li class="nav-item">
             <button class="nav-link {% if pestana_activa == 'tab-retirados' %}active {% endif %}fw-semibold position-relative text-danger" data-bs-toggle="tab" data-bs-target="#tab-retirados" type="button">
                 {% set fuente_filtro = request.args.get('fuente', '') %}
-                <i class="bi bi-eye-slash"></i> {% if es_beta %}Retirados{% if fuente_filtro in ('Meta', 'Google') %} de {{ fuente_filtro }}{% endif %}{% else %}Retirados de Meta{% endif %}
+                <i class="bi bi-eye-slash"></i> Retirados{% if fuente_filtro in ('Meta', 'Google') %} de {{ fuente_filtro }}{% endif %}
                 {% if total_retirados > 0 %}
                 <span class="badge rounded-pill bg-danger ms-1">{{ total_retirados }}</span>
                 {% endif %}
@@ -2331,12 +2298,10 @@ HTML_TEMPLATE = """
             </button>
         </li>
     </ul>
-    {% if es_beta %}
         <button class="btn btn-sm btn-outline-info d-flex align-items-center gap-1 ms-auto mb-1" data-bs-toggle="modal" data-bs-target="#modalComparar" title="Comparar dos o más compañías">
-            <i class="bi bi-layout-split" aria-hidden="true"></i> Comparar
+            <i class="bi bi-layout-split" aria-hidden="true"></i> Comparar {{ nuevo('comparar') }}
         </button>
     </div>
-    {% endif %}
 
     <div class="tab-content">
         <!-- Panel 1: Gráficas y Empresas Registradas -->
@@ -2345,11 +2310,11 @@ HTML_TEMPLATE = """
                 <div class="col-lg-8">
                     <div class="card-custom p-3 h-100">
                         <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
-                            <h6 class="fw-bold m-0"><i class="bi bi-graph-up"></i> {{ 'Anuncios Nuevos por Empresa' if es_beta else 'Publicación de Anuncios por Empresa' }}</h6>
+                            <h6 class="fw-bold m-0"><i class="bi bi-graph-up"></i> Anuncios Nuevos por Empresa</h6>
                             <div class="d-flex flex-wrap gap-2">
                                 <div class="btn-group btn-group-sm" role="group" id="timelineModoFilter" aria-label="Anuncios a mostrar">
-                                    <button type="button" class="btn btn-primary active" aria-pressed="true" onclick="setTimelineModo('historico', this)">{{ 'Todos' if es_beta else 'Históricos' }}</button>
-                                    <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="setTimelineModo('actual', this)" title="Anuncios que siguen {{ 'activos' if es_beta else 'publicados' }} en Meta o Google">{{ 'Vigentes' if es_beta else 'Actuales' }}</button>
+                                    <button type="button" class="btn btn-primary active" aria-pressed="true" onclick="setTimelineModo('historico', this)">Todos</button>
+                                    <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="setTimelineModo('actual', this)" title="Anuncios que siguen activos en Meta o Google">Vigentes</button>
                                 </div>
                                 <div class="btn-group btn-group-sm" role="group" id="timeRangeFilter" aria-label="Período del gráfico">
                                     <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="filterTimeline(7, this)">7D</button>
@@ -2395,12 +2360,11 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            {% if es_beta %}
             <div class="row g-3 mb-4">
                 <div class="col-lg-7">
                     <div class="card-custom p-3 h-100">
                         <div class="d-flex justify-content-between align-items-center mb-1">
-                            <h6 class="fw-bold m-0"><i class="bi bi-activity"></i> Anuncios Activos en el Tiempo <span class="badge bg-warning text-dark">BETA</span></h6>
+                            <h6 class="fw-bold m-0"><i class="bi bi-activity"></i> Anuncios Activos en el Tiempo {{ nuevo('historial_activos') }}</h6>
                         </div>
                         <p class="small text-muted mb-2">Cuántos anuncios tenía activos cada empresa en cada corrida de los bots (últimos 90 días).</p>
                         {% if historial_data.fechas|length >= 2 %}
@@ -2412,7 +2376,7 @@ HTML_TEMPLATE = """
                 </div>
                 <div class="col-lg-5">
                     <div class="card-custom p-3 h-100">
-                        <h6 class="fw-bold mb-1"><i class="bi bi-signpost-split"></i> ¿A Dónde Llevan los Anuncios? <span class="badge bg-warning text-dark">BETA</span></h6>
+                        <h6 class="fw-bold mb-1"><i class="bi bi-signpost-split"></i> ¿A Dónde Llevan los Anuncios? {{ nuevo('destinos') }}</h6>
                         <p class="small text-muted mb-2">Destino del botón de cada anuncio que cumple los filtros.</p>
                         {% if destinos_data.companias %}
                         <div style="height: {{ [160, 70 + 34 * destinos_data.companias|length]|max }}px;"><canvas id="destinosChart"></canvas></div>
@@ -2422,16 +2386,15 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
             </div>
-            {% endif %}
 
             <!-- Tabla de Empresas Registradas -->
             <div class="card-custom overflow-hidden reveal-scroll">
                 <div class="p-3 bg-primary bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
                     <div>
-                        <h6 class="fw-bold text-primary mb-1"><i class="bi bi-buildings"></i> Empresas Monitoreadas y Volumen de {{ 'Anuncios' if es_beta else 'Creatividades' }}</h6>
-                        <p class="small text-muted mb-0">{% if es_beta %}Anuncios que cumplen los filtros seleccionados, divididos por formato para cada marca.{% else %}Total de creatividades almacenadas en el sistema divididas por formato para cada marca.{% endif %}</p>
+                        <h6 class="fw-bold text-primary mb-1"><i class="bi bi-buildings"></i> Empresas Monitoreadas y Volumen de Anuncios</h6>
+                        <p class="small text-muted mb-0">Anuncios que cumplen los filtros seleccionados, divididos por formato para cada marca.</p>
                     </div>
-                    {% set modos_empresas = [('historico', stats_empresas), ('actual', stats_empresas_vigentes)] if es_beta else [('historico', stats_empresas)] %}
+                    {% set modos_empresas = [('historico', stats_empresas), ('actual', stats_empresas_vigentes)] %}
                     {% for modo, lista in modos_empresas %}
                     <span class="badge bg-primary fs-6{% if modo == 'actual' %} d-none{% endif %}" data-modo-empresas="{{ modo }}">{{ lista|length }} empresa{{ 's' if lista|length != 1 }}</span>
                     {% endfor %}
@@ -2478,15 +2441,15 @@ HTML_TEMPLATE = """
                                     </span>
                                 </td>
                                 <td class="text-end">
-                                    <a href="{% if es_beta %}{{ url_con_filtros(compania=emp.compania, pestana='tab-ads') }}{% else %}/?compania={{ emp.compania|urlencode }}{% endif %}" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem;" title="Filtrar anuncios de esta empresa">
-                                        <i class="bi bi-funnel"></i> {{ 'Ver Anuncios' if es_beta else 'Ver Creatividades' }}
+                                    <a href="{{ url_con_filtros(compania=emp.compania, pestana='tab-ads') }}" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem;" title="Filtrar anuncios de esta empresa">
+                                        <i class="bi bi-funnel"></i> Ver Anuncios
                                     </a>
                                 </td>
                             </tr>
                             {% else %}
                             <tr>
                                 <td colspan="7" class="text-center py-5 text-muted">
-                                    <i class="bi bi-folder-x fs-2 d-block mb-2"></i> {% if not es_beta %}No hay estadísticas de empresas disponibles.{% elif modo == 'actual' %}No hay empresas con anuncios vigentes para los filtros seleccionados.{% else %}No hay empresas con anuncios para los filtros seleccionados.{% endif %}
+                                    <i class="bi bi-folder-x fs-2 d-block mb-2"></i> {% if modo == 'actual' %}No hay empresas con anuncios vigentes para los filtros seleccionados.{% else %}No hay empresas con anuncios para los filtros seleccionados.{% endif %}
                                 </td>
                             </tr>
                             {% endfor %}
@@ -2500,19 +2463,19 @@ HTML_TEMPLATE = """
         <!-- Panel 2: Detalle de Anuncios -->
         <div class="tab-pane fade{% if pestana_activa == 'tab-ads' %} show active{% endif %}" id="tab-ads">
             <div class="card-custom overflow-hidden">
-                <div class="table-responsive{% if es_beta %} tabla-larga{% endif %}">
+                <div class="table-responsive tabla-larga">
                     <table class="table table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr class="small text-muted">
                                 <th data-sin-orden>Vista {{ nuevo('miniaturas') }}</th>
                                 <th>Empresa</th>
-                                <th>{{ 'Estado' if es_beta else 'Estado / Desempeño' }}</th>
+                                <th>Estado</th>
                                 <th>Plataformas</th>
                                 <th>Formato</th>
-                                <th>{{ 'Texto' if es_beta else 'Copia / Texto' }} {{ nuevo('texto_completo') }}</th>
-                                <th>{{ 'Días activo' if es_beta else 'Tiempo Activo' }}</th>
-                                <th>{{ 'Fecha de subida' if es_beta else 'Fecha de Subida' }}</th>
-                                <th data-sin-orden>{{ 'Anuncio' if es_beta else 'Acción' }}</th>
+                                <th>Texto {{ nuevo('texto_completo') }}</th>
+                                <th>Días activo</th>
+                                <th>Fecha de subida</th>
+                                <th data-sin-orden>Anuncio</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2522,14 +2485,6 @@ HTML_TEMPLATE = """
                                 <td>
                                     <div class="d-flex align-items-center gap-1">
                                         <span class="fw-bold">{{ ad.compania or 'N/A' }}</span>
-                                        {% if ad.compania and not es_beta %}
-                                        <form action="/bloquear_compania" method="POST" class="d-inline" onsubmit="return confirm('¿Bloquear la compañía {{ ad.compania }} del dashboard?');">
-                                            <input type="hidden" name="compania" value="{{ ad.compania }}">
-                                            <button type="submit" class="btn btn-link text-danger p-0 border-0 ms-1" title="Bloquear esta compañía" aria-label="Bloquear la compañía {{ ad.compania }}">
-                                                <i class="bi bi-slash-circle" style="font-size: 0.8rem;"></i>
-                                            </button>
-                                        </form>
-                                        {% endif %}
                                     </div>
                                 </td>
                                 <td>
@@ -2538,13 +2493,13 @@ HTML_TEMPLATE = """
                                             {{ ad.estado or 'Desconocido' }}
                                         </span>
                                         {% if ad.es_winning %}
-                                        <span class="badge badge-winning" title="Anuncio con más de {{ 45 if es_beta else 30 }} días continuos activo">
-                                            {{ '⏳ Longevo' if es_beta else '🔥 Winning Ad' }}
+                                        <span class="badge badge-winning" title="Anuncio con más de 45 días continuos activo">
+                                            ⏳ Longevo
                                         </span>
                                         {% endif %}
                                     </div>
                                 </td>
-                                <td{% if es_beta %} style="width: 150px; max-width: 150px;"{% endif %}>{% if es_beta %}<div class="d-flex flex-wrap gap-1">{{ ad.plataformas_html|safe }}</div>{% else %}{{ ad.plataformas_html|safe }}{% endif %}</td>
+                                <td style="width: 150px; max-width: 150px;"><div class="d-flex flex-wrap gap-1">{{ ad.plataformas_html|safe }}</div></td>
                                 <td>
                                     {% if 'video' in (ad.formato|string|lower) %}
                                         <span class="text-danger small fw-semibold">
@@ -2556,14 +2511,14 @@ HTML_TEMPLATE = """
                                     {% else %}
                                         {% set f = ad.formato|string|lower %}{% if 'texto' in f %}<span class="text-info small fw-semibold"><i class="bi bi-fonts"></i> Texto</span>{% elif 'carrusel' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-images"></i> Carrusel</span>{% elif 'dinámico' in f %}<span class="text-warning small fw-semibold"><i class="bi bi-shuffle"></i> Dinámico</span>{% else %}<span class="text-warning small fw-semibold"><i class="bi bi-image"></i> Imagen</span>{% endif %}
                                     {% endif %}
-                                    {% if es_beta and ad.destino %}
+                                    {% if ad.destino %}
                                     <div class="mt-1"><span class="badge bg-body-secondary text-body-secondary fw-semibold" style="font-size: 0.65rem;" title="{{ ad.destino_url or '' }}"><i class="bi {{ iconos_destino.get(ad.destino, 'bi-box-arrow-up-right') }}"></i> {{ ad.destino }}</span></div>
                                     {% endif %}
                                 </td>
-                                {% set largo_texto = 220 if es_beta else 120 %}
-                                <td class="small text-muted" style="{% if es_beta %}min-width: 320px; max-width: 440px;{% else %}max-width: 280px;{% endif %}">
+                                {% set largo_texto = 220 %}
+                                <td class="small text-muted" style="min-width: 320px; max-width: 440px;">
                                     {% set texto_ad = ad.texto or ad.titulo or 'Sin descripción' %}
-                                    {% if texto_ad|length > largo_texto %}<span class="texto-completo"{% if es_beta %} tabindex="0"{% endif %} data-bs-title="{{ texto_ad }}">{{ texto_ad[:largo_texto] }}...</span>{% else %}{{ texto_ad[:largo_texto] }}{% if (ad.texto or ad.titulo or '')|length > largo_texto %}...{% endif %}{% endif %}
+                                    {% if texto_ad|length > largo_texto %}<span class="texto-completo" tabindex="0" data-bs-title="{{ texto_ad }}">{{ texto_ad[:largo_texto] }}...</span>{% else %}{{ texto_ad[:largo_texto] }}{% if (ad.texto or ad.titulo or '')|length > largo_texto %}...{% endif %}{% endif %}
                                     {% if ad.productos %}
                                     <div class="mt-1 d-flex flex-wrap gap-1">
                                         {% for p in ad.productos %}{% if p in productos_sel %}<span class="badge bg-primary text-white shadow-sm" style="font-size: 0.65rem;" title="Producto filtrado"><i class="bi bi-check-circle-fill"></i> {{ p }}</span>{% else %}<span class="badge bg-primary-subtle text-primary-emphasis{% if productos_sel %} opacity-50{% endif %}" style="font-size: 0.65rem;"><i class="bi bi-box-seam"></i> {{ p }}</span>{% endif %}{% endfor %}
@@ -2581,18 +2536,10 @@ HTML_TEMPLATE = """
                                 </td>
                                 <td class="small fw-semibold">{{ ad.fecha_display }}</td>
                                 <td>
-                                    {% if es_beta %}
                                     <div class="d-flex align-items-center gap-1">
                                         {% if ad.link_individual %}<a href="{{ ad.link_individual }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary text-nowrap"><i class="bi bi-box-arrow-up-right"></i> Ver anuncio</a>{% endif %}
                                         {% if ad.compania %}<button type="button" class="btn btn-sm btn-outline-secondary btn-bloquear" data-compania="{{ ad.compania }}" title="Bloquear compañía" aria-label="Bloquear la compañía {{ ad.compania }}"><i class="bi bi-slash-circle" aria-hidden="true"></i></button>{% endif %}
                                     </div>
-                                    {% elif ad.link_individual %}
-                                    <a href="{{ ad.link_individual }}" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem;">
-                                        <i class="bi bi-box-arrow-up-right"></i> Ver anuncio
-                                    </a>
-                                    {% else %}
-                                    <span class="text-muted small">-</span>
-                                    {% endif %}
                                 </td>
                             </tr>
                             {% else %}
@@ -2613,29 +2560,24 @@ HTML_TEMPLATE = """
             <div class="card-custom overflow-hidden">
                 <div class="p-3 bg-{{ c_win }} bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
                     <div>
-                        {% if es_beta %}
                         <h6 class="fw-bold text-{{ c_win }} mb-1"><i class="bi bi-hourglass-split"></i> Anuncios Más Longevos (Activos > 45 días)</h6>
                         <p class="small text-muted mb-0">Campañas actualmente activas con más de 45 días continuos en circulación.</p>
-                        {% else %}
-                        <h6 class="fw-bold text-{{ c_win }} mb-1"><i class="bi bi-fire"></i> Anuncios de Alto Rendimiento (Activos > 30 días)</h6>
-                        <p class="small text-muted mb-0">Campañas actualmente activas con más de un mes continuo en circulación.</p>
-                        {% endif %}
                     </div>
                     <span class="badge bg-{{ c_win }} fs-6">{{ anuncios_winning|length }} detectados</span>
                 </div>
-                <div class="table-responsive{% if es_beta %} tabla-larga{% endif %}">
+                <div class="table-responsive tabla-larga">
                     <table class="table table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr class="small text-muted">
                                 <th data-sin-orden>Vista</th>
                                 <th>Empresa</th>
-                                <th>{{ 'Estado' if es_beta else 'Insignia' }}</th>
+                                <th>Estado</th>
                                 <th>Plataformas</th>
                                 <th>Formato</th>
                                 <th>Texto</th>
-                                <th>{{ 'Días activo' if es_beta else 'Días Activo' }}</th>
-                                <th>{{ 'Fecha de subida' if es_beta else 'Fecha de Subida' }}</th>
-                                <th data-sin-orden>{{ 'Anuncio' if es_beta else 'Enlace' }}</th>
+                                <th>Días activo</th>
+                                <th>Fecha de subida</th>
+                                <th data-sin-orden>Anuncio</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2643,7 +2585,7 @@ HTML_TEMPLATE = """
                             <tr>
                                 {{ celda_miniatura(ad) }}
                                 <td class="fw-bold">{{ ad.compania or 'N/A' }}</td>
-                                <td><span class="badge badge-winning">{{ '⏳ Longevo' if es_beta else '🔥 Winning Ad' }}</span></td>
+                                <td><span class="badge badge-winning">⏳ Longevo</span></td>
                                 <td>{{ ad.plataformas_html|safe }}</td>
                                 <td>
                                     {% if 'video' in (ad.formato|string|lower) %}
@@ -2658,14 +2600,14 @@ HTML_TEMPLATE = """
                                     {% endif %}
                                 </td>
                                 <td class="small text-muted" style="max-width: 300px;">
-                                    {% if es_beta %}{{ texto_anuncio(ad, 140) }}{% else %}{{ (ad.texto or ad.titulo or 'Sin descripción')[:140] }}{% endif %}
+{{ texto_anuncio(ad, 140) }}
                                 </td>
-                                <td><span class="badge {{ 'bg-warning-subtle text-warning-emphasis' if es_beta else 'bg-danger-subtle text-danger' }} fw-bold">{{ ad.dias_activo }} días</span></td>
+                                <td><span class="badge bg-warning-subtle text-warning-emphasis fw-bold">{{ ad.dias_activo }} días</span></td>
                                 <td class="small fw-semibold">{{ ad.fecha_display }}</td>
                                 <td>
                                     {% if ad.link_individual %}
-                                    <a href="{{ ad.link_individual }}" target="_blank" rel="noopener" class="{{ 'btn btn-sm btn-outline-primary text-nowrap' if es_beta else 'btn btn-sm btn-primary py-0 px-2' }}"{% if not es_beta %} style="font-size: 0.75rem;"{% endif %}>
-                                        <i class="bi bi-box-arrow-up-right"></i> {{ 'Ver anuncio' if es_beta else 'Ver Anuncio' }}
+                                    <a href="{{ ad.link_individual }}" target="_blank" rel="noopener" class="{{ 'btn btn-sm btn-outline-primary text-nowrap' }}">
+                                        <i class="bi bi-box-arrow-up-right"></i> Ver anuncio
                                     </a>
                                     {% endif %}
                                 </td>
@@ -2673,7 +2615,7 @@ HTML_TEMPLATE = """
                             {% else %}
                             <tr>
                                 <td colspan="9" class="text-center py-5 text-muted">
-                                    <i class="bi bi-shield-check fs-2 d-block mb-2 text-warning"></i> No hay campañas activas con más de {{ 45 if es_beta else 30 }} días en los filtros seleccionados.
+                                    <i class="bi bi-shield-check fs-2 d-block mb-2 text-warning"></i> No hay campañas activas con más de 45 días en los filtros seleccionados.
                                 </td>
                             </tr>
                             {% endfor %}
@@ -2689,11 +2631,11 @@ HTML_TEMPLATE = """
                 <div class="p-3 bg-danger bg-opacity-10 border-bottom d-flex align-items-center justify-content-between">
                     <div>
                         <h6 class="fw-bold text-danger mb-1"><i class="bi bi-eye-slash"></i> Anuncios Guardados que Ya Fueron Retirados o Apagados</h6>
-                        <p class="small text-muted mb-0">Campañas que existieron en {% if not es_beta %}Meta Ads{% elif request.args.get('fuente') == 'Meta' %}Meta Ads{% elif request.args.get('fuente') == 'Google' %}Google Ads{% else %}Meta Ads o Google Ads{% endif %} pero actualmente ya no están activas ni circulando.</p>
+                        <p class="small text-muted mb-0">Campañas que existieron en {% if request.args.get('fuente') == 'Meta' %}Meta Ads{% elif request.args.get('fuente') == 'Google' %}Google Ads{% else %}Meta Ads o Google Ads{% endif %} pero actualmente ya no están activas ni circulando.</p>
                     </div>
                     <span class="badge bg-danger fs-6">{{ anuncios_retirados|length }} inactivos</span>
                 </div>
-                <div class="table-responsive{% if es_beta %} tabla-larga{% endif %}">
+                <div class="table-responsive tabla-larga">
                     <table class="table table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr class="small text-muted">
@@ -2702,10 +2644,10 @@ HTML_TEMPLATE = """
                                 <th>Estado</th>
                                 <th>Plataformas</th>
                                 <th>Formato</th>
-                                <th>{{ 'Texto' if es_beta else 'Texto / Copy' }}</th>
-                                <th>{{ 'Días activo' if es_beta else 'Días que Estuvo Activo' }}</th>
-                                <th>{{ 'Fecha de subida' if es_beta else 'Fecha Original' }}</th>
-                                <th data-sin-orden>{{ 'Anuncio' if es_beta else 'Enlace Histórico' }}</th>
+                                <th>Texto</th>
+                                <th>Días activo</th>
+                                <th>Fecha de subida</th>
+                                <th data-sin-orden>Anuncio</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2728,7 +2670,7 @@ HTML_TEMPLATE = """
                                     {% endif %}
                                 </td>
                                 <td class="small text-muted" style="max-width: 300px;">
-                                    {% if es_beta %}{{ texto_anuncio(ad, 140) }}{% else %}{{ (ad.texto or ad.titulo or 'Sin descripción')[:140] }}{% endif %}
+{{ texto_anuncio(ad, 140) }}
                                 </td>
                                 <td>
                                     <span class="badge bg-secondary-subtle text-secondary fw-semibold">{{ ad.dias_activo }} días aprox.</span>
@@ -2736,7 +2678,7 @@ HTML_TEMPLATE = """
                                 <td class="small fw-semibold">{{ ad.fecha_display }}</td>
                                 <td>
                                     {% if ad.link_individual %}
-                                    <a href="{{ ad.link_individual }}" target="_blank" rel="noopener" class="{{ 'btn btn-sm btn-outline-primary text-nowrap' if es_beta else 'btn btn-sm btn-outline-secondary py-0 px-2' }}"{% if not es_beta %} style="font-size: 0.75rem;"{% endif %}>
+                                    <a href="{{ ad.link_individual }}" target="_blank" rel="noopener" class="{{ 'btn btn-sm btn-outline-primary text-nowrap' }}">
                                         <i class="bi bi-box-arrow-up-right"></i> Ver anuncio
                                     </a>
                                     {% endif %}
@@ -2770,18 +2712,18 @@ HTML_TEMPLATE = """
                     {% endif %}
                 </div>
 
-                <div class="table-responsive{% if es_beta %} tabla-larga{% endif %}" id="nuevosContainer">
+                <div class="table-responsive tabla-larga" id="nuevosContainer">
                     <table class="table table-hover align-middle mb-0" id="nuevosTable">
                         <thead class="table-light">
                             <tr class="small text-muted">
                                 <th data-sin-orden>Vista</th>
                                 <th>Empresa</th>
-                                <th>{{ 'Estado' if es_beta else 'Distintivo' }}</th>
+                                <th>Estado</th>
                                 <th>Plataformas</th>
                                 <th>Formato</th>
                                 <th>Texto</th>
-                                <th>{{ 'Fecha de subida' if es_beta else 'Fecha de Subida' }}</th>
-                                <th data-sin-orden>{{ 'Anuncio' if es_beta else 'Enlace' }}</th>
+                                <th>Fecha de subida</th>
+                                <th data-sin-orden>Anuncio</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2804,13 +2746,13 @@ HTML_TEMPLATE = """
                                     {% endif %}
                                 </td>
                                 <td class="small text-muted" style="max-width: 300px;">
-                                    {% if es_beta %}{{ texto_anuncio(ad, 140) }}{% else %}{{ (ad.texto or ad.titulo or 'Sin descripción')[:140] }}{% endif %}
+{{ texto_anuncio(ad, 140) }}
                                 </td>
                                 <td class="small fw-semibold">{{ ad.fecha_display }}</td>
                                 <td>
                                     {% if ad.link_individual %}
-                                    <a href="{{ ad.link_individual }}" target="_blank" rel="noopener" class="{{ 'btn btn-sm btn-outline-primary text-nowrap' if es_beta else 'btn btn-sm btn-primary py-0 px-2' }}"{% if not es_beta %} style="font-size: 0.75rem;"{% endif %}>
-                                        <i class="bi bi-box-arrow-up-right"></i> {{ 'Ver anuncio' if es_beta else 'Ver Anuncio' }}
+                                    <a href="{{ ad.link_individual }}" target="_blank" rel="noopener" class="{{ 'btn btn-sm btn-outline-primary text-nowrap' }}">
+                                        <i class="bi bi-box-arrow-up-right"></i> Ver anuncio
                                     </a>
                                     {% endif %}
                                 </td>
@@ -2832,22 +2774,18 @@ HTML_TEMPLATE = """
         <div class="tab-pane fade{% if pestana_activa == 'tab-keywords' %} show active{% endif %}" id="tab-keywords">
             <div class="row g-3">
                 <div class="col-lg-7">
-                    <div class="card-custom p-3{% if es_beta %} h-100 d-flex flex-column{% endif %}">
-                        <h6 class="fw-bold mb-3"><i class="bi bi-bar-chart"></i> Top {% if es_beta %}20 {% endif %}Palabras Clave más Usadas</h6>
-                        <div {% if es_beta %}class="flex-grow-1" style="min-height: 560px; position: relative;"{% else %}style="height: 360px;"{% endif %}>
+                    <div class="card-custom p-3 h-100 d-flex flex-column">
+                        <h6 class="fw-bold mb-3"><i class="bi bi-bar-chart"></i> Top 20 Palabras Clave más Usadas</h6>
+                        <div class="flex-grow-1" style="min-height: 560px; position: relative;">
                             <canvas id="keywordsChart"></canvas>
                         </div>
                     </div>
                 </div>
                 <div class="col-lg-5">
-                    <div class="card-custom p-3{% if es_beta %} h-100{% endif %}">
-                        {% if es_beta %}
-                        <h6 class="fw-bold mb-1"><i class="bi bi-tags"></i> Buscar por Término</h6>
+                    <div class="card-custom p-3 h-100">
+                        <h6 class="fw-bold mb-1"><i class="bi bi-tags"></i> Buscar por Término {{ nuevo('buscar_termino') }}</h6>
                         <p class="small text-muted mb-3">Haz clic en un término para ver los anuncios que lo usan.</p>
-                        {% else %}
-                        <h6 class="fw-bold mb-3"><i class="bi bi-tags"></i> Frecuencia de Términos</h6>
-                        {% endif %}
-                        <div class="table-responsive" style="max-height: {{ 560 if es_beta else 360 }}px; overflow-y: auto;">
+                        <div class="table-responsive" style="max-height: 560px; overflow-y: auto;">
                             <table class="table table-sm table-hover align-middle">
                                 <thead class="table-light">
                                     <tr class="small text-muted">
@@ -2860,7 +2798,7 @@ HTML_TEMPLATE = """
                                     {% for palabra, conteo in top_palabras %}
                                     <tr>
                                         <td class="text-muted small">{{ loop.index }}</td>
-                                        <td class="fw-semibold text-primary">{% if es_beta %}<a class="termino-link" href="{{ url_con_filtros(q=palabra, pestana='tab-ads') }}">{{ palabra }}</a>{% else %}{{ palabra }}{% endif %}</td>
+                                        <td class="fw-semibold text-primary"><a class="termino-link" href="{{ url_con_filtros(q=palabra, pestana='tab-ads') }}">{{ palabra }}</a></td>
                                         <td class="text-end fw-bold">{{ conteo }}</td>
                                     </tr>
                                     {% else %}
@@ -3114,7 +3052,7 @@ HTML_TEMPLATE = """
             if (pct < 30) {
                 status.innerText = 'Conectando con Meta Ads...';
             } else if (pct < 65) {
-                status.innerText = 'Scrapeando {{ "anuncios" if es_beta else "creatividades" }}...';
+                status.innerText = 'Scrapeando anuncios...';
             } else {
                 status.innerText = 'Sincronizando Base de Datos...';
             }
@@ -3358,7 +3296,6 @@ HTML_TEMPLATE = """
         });
     });
 
-    {% if es_beta %}
     // "Más filtros": muestra u oculta Duración, Plataforma y Formato.
     document.getElementById('btnMasFiltros')?.addEventListener('click', e => {
         const abierto = document.getElementById('filterForm').classList.toggle('mostrar-extra');
@@ -3417,7 +3354,6 @@ HTML_TEMPLATE = """
             });
         });
     })();
-    {% endif %}
 
     // Editor simplificado de categorías de producto (todos los usuarios).
     (function editorCategorias() {
@@ -3652,7 +3588,6 @@ HTML_TEMPLATE = """
     })();
     {% endif %}
 
-    {% if es_beta %}
     // Comparar compañías: la selección vive en la URL (?comparar=A&comparar=B) para poder compartirla.
     (function compararCompanias() {
         const datos = {{ comparativa|tojson }};
@@ -4069,7 +4004,6 @@ HTML_TEMPLATE = """
             document.addEventListener('DOMContentLoaded', () => window.bootstrap && bootstrap.Modal.getOrCreateInstance(ventana).show());
         }
     })();
-    {% endif %}
 
     if (document.getElementById('destinosChart')) {
         const coloresDestino = {
@@ -4093,8 +4027,7 @@ HTML_TEMPLATE = """
         });
     }
 
-    {% if es_beta %}
-    // Filtros automáticos (Beta): cada cambio recarga el panel con los filtros aplicados.
+    // Filtros automáticos: cada cambio recarga el panel con los filtros aplicados.
     // Antes de recargar se guarda el scroll y el foco para dejarlos igual después.
     (function filtrosAutomaticos() {
         const form = document.getElementById('filterForm');
@@ -4203,7 +4136,6 @@ HTML_TEMPLATE = """
             }
         });
     })();
-    {% endif %}
 </script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
@@ -4568,7 +4500,6 @@ def index():
     raw_google_content, _ = get_github_urls_file(URLS_GOOGLE_FILE_PATH)
     config_google = parse_urls_google(raw_google_content)
     productos_sel = [p.strip() for p in request.args.getlist('producto') if p.strip()]
-    es_beta = usuario_actual() == USUARIO_BETA
     raw_productos_content = leer_config(PRODUCTOS_FILE_PATH)
     reglas_productos = parse_productos(raw_productos_content)
 
@@ -4599,26 +4530,6 @@ def index():
                         ORDER BY compania ASC
                     """)
                 lista_companias = [r['compania'] for r in cur.fetchall()]
-
-                if not es_beta:
-                    # Conteo agrupado por empresa. Los '%%' son necesarios porque la consulta
-                    # siempre se ejecuta con parámetros (psycopg2 leería '%v' como marcador).
-                    es_video = "(LOWER(formato) LIKE '%%video%%' OR COALESCE(duracion_segundos, 0) > 0)"
-                    filtro_bloqueadas = "AND compania != ALL(%s)" if companias_bloqueadas else ""
-                    cur.execute(f"""
-                        SELECT
-                            compania,
-                            COUNT(*) AS total_anuncios,
-                            SUM(CASE WHEN {es_video} THEN 1 ELSE 0 END) AS total_videos,
-                            SUM(CASE WHEN NOT {es_video} AND (LOWER(formato) LIKE '%%foto%%' OR LOWER(formato) LIKE '%%imagen%%') THEN 1 ELSE 0 END) AS total_fotos,
-                            SUM(CASE WHEN NOT {es_video} AND LOWER(formato) LIKE '%%texto%%' THEN 1 ELSE 0 END) AS total_textos
-                        FROM anuncios
-                        WHERE compania IS NOT NULL AND compania != ''
-                        {filtro_bloqueadas}
-                        GROUP BY compania
-                        ORDER BY total_anuncios DESC;
-                    """, (companias_bloqueadas,) if companias_bloqueadas else ())
-                    stats_empresas = cur.fetchall()
 
                 # tiene_miniatura: hay copia propia de la imagen (no caduca como las URLs de Meta).
                 query = ("SELECT *, EXISTS (SELECT 1 FROM miniaturas mi WHERE mi.link_individual = anuncios.link_individual)"
@@ -4695,11 +4606,11 @@ def index():
     for a in anuncios:
         fecha_detectada = extraer_fecha_anuncio(a)
         a['fecha_display'] = fecha_detectada
-        dias = calcular_dias_activo(fecha_detectada, fecha_ultima_vista(a) if es_beta else None)
+        dias = calcular_dias_activo(fecha_detectada, fecha_ultima_vista(a))
         a['dias_activo'] = dias
         
         estado_ad = str(a.get('estado', '')).strip().lower()
-        a['es_winning'] = (dias >= (DIAS_LONGEVO if es_beta else DIAS_WINNING_AD) and fecha_detectada != 'N/A' and estado_ad == 'activo')
+        a['es_winning'] = (dias >= DIAS_LONGEVO and fecha_detectada != 'N/A' and estado_ad == 'activo')
         
         a['plataformas_html'] = render_plataformas_badges(a.get('plataformas'))
         
@@ -4716,9 +4627,8 @@ def index():
     historial_data = {'fechas': [], 'series': []}
     destinos_data = {'companias': [], 'destinos': [], 'series': {}}
     alerta_salud = False
-    if es_beta:
-        destinos_data = destinos_por_empresa(anuncios)
-        historial_data = historial_activos(companias_sel, fuente, companias_bloqueadas)
+    destinos_data = destinos_por_empresa(anuncios)
+    historial_data = historial_activos(companias_sel, fuente, companias_bloqueadas)
     if usuario_actual() in USUARIOS_SALUD:
         conn_salud = get_db_connection()
         if conn_salud:
@@ -4730,9 +4640,8 @@ def index():
             finally:
                 conn_salud.close()
 
-    if es_beta:
-        stats_empresas = estadisticas_por_empresa(anuncios)
-        stats_empresas_vigentes = estadisticas_por_empresa([a for a in anuncios if a.get('presente_en_meta')])
+    stats_empresas = estadisticas_por_empresa(anuncios)
+    stats_empresas_vigentes = estadisticas_por_empresa([a for a in anuncios if a.get('presente_en_meta')])
 
     total_anuncios = len(anuncios)
     companias_set = {a['compania'] for a in anuncios if a.get('compania')}
@@ -4764,7 +4673,7 @@ def index():
     palabras_encontradas = []
     for a in anuncios:
         # Los anuncios de Google sin título de YouTube solo traen un título generado por el bot.
-        if a.get('fuente') == 'Google' and (not es_beta or str(a.get('titulo') or '').startswith('Anuncio de ')):
+        if a.get('fuente') == 'Google' and str(a.get('titulo') or '').startswith('Anuncio de '):
             continue
         texto_completo = f"{a.get('texto') or ''} {a.get('titulo') or ''}".lower()
         palabras = re.findall(r'[a-záéíóúñ]{4,}', texto_completo)
@@ -4775,8 +4684,8 @@ def index():
         palabras_encontradas.extend(palabras_limpias)
 
     contador_palabras = Counter(palabras_encontradas)
-    top_palabras = contador_palabras.most_common(20 if es_beta else 12)
-    comparativa = comparativa_empresas(anuncios, palabras_empresas) if es_beta else []
+    top_palabras = contador_palabras.most_common(20)
+    comparativa = comparativa_empresas(anuncios, palabras_empresas)
 
     keywords_chart_data = {
         "labels": [p[0].capitalize() for p in top_palabras],
@@ -5091,7 +5000,7 @@ def lanzar_scraper():
     return redirect(url_for('index', msg="⚠️ Error al lanzar: " + " | ".join(errores)))
 
 def excel_reporte(df):
-    # Excel de Funciones Beta: solo las columnas útiles, con nombres claros y fechas reales.
+    # Excel del panel: solo las columnas útiles, con nombres claros y fechas reales.
     filas = df.to_dict('records')
 
     def fecha(valor):
@@ -5211,33 +5120,24 @@ def descargar_excel():
             df = df[[coincide_producto(p, productos_sel) for p in productos_por_fila]]
 
         df['fecha_subida_detectada'] = df.apply(lambda row: extraer_fecha_anuncio(row.to_dict()), axis=1)
-        es_beta = usuario_actual() == USUARIO_BETA
-        df['dias_activo'] = df.apply(lambda r: calcular_dias_activo(r['fecha_subida_detectada'], fecha_ultima_vista(r.to_dict()) if es_beta else None), axis=1)
-        df['es_winning_ad'] = df.apply(lambda r: (r['dias_activo'] >= (DIAS_LONGEVO if es_beta else DIAS_WINNING_AD) and str(r.get('estado', '')).strip().lower() == 'activo'), axis=1)
+        df['dias_activo'] = df.apply(lambda r: calcular_dias_activo(r['fecha_subida_detectada'], fecha_ultima_vista(r.to_dict())), axis=1)
+        df['es_winning_ad'] = df.apply(lambda r: (r['dias_activo'] >= DIAS_LONGEVO and str(r.get('estado', '')).strip().lower() == 'activo'), axis=1)
 
         output = io.BytesIO()
-        if es_beta:
-            reporte = excel_reporte(df)
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                reporte.to_excel(writer, index=False, sheet_name='Anuncios')
-                hoja = writer.sheets['Anuncios']
-                hoja.freeze_panes = 'A2'
-                hoja.auto_filter.ref = hoja.dimensions
-                for i, columna in enumerate(reporte.columns, start=1):
-                    largo = max([len(str(columna))] + [len(str(v)) for v in reporte[columna].head(500)])
-                    hoja.column_dimensions[hoja.cell(row=1, column=i).column_letter].width = min(max(largo + 2, 10), 70)
-                    if columna.startswith('Fecha'):
-                        for celda in hoja.iter_rows(min_row=2, min_col=i, max_col=i):
-                            celda[0].number_format = 'DD/MM/YYYY'
-            output.seek(0)
-            filename = f"Reporte_Galac_Ads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-            return send_file(output, download_name=filename, as_attachment=True, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-
+        reporte = excel_reporte(df)
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Anuncios_Meta')
+            reporte.to_excel(writer, index=False, sheet_name='Anuncios')
+            hoja = writer.sheets['Anuncios']
+            hoja.freeze_panes = 'A2'
+            hoja.auto_filter.ref = hoja.dimensions
+            for i, columna in enumerate(reporte.columns, start=1):
+                largo = max([len(str(columna))] + [len(str(v)) for v in reporte[columna].head(500)])
+                hoja.column_dimensions[hoja.cell(row=1, column=i).column_letter].width = min(max(largo + 2, 10), 70)
+                if columna.startswith('Fecha'):
+                    for celda in hoja.iter_rows(min_row=2, min_col=i, max_col=i):
+                        celda[0].number_format = 'DD/MM/YYYY'
         output.seek(0)
-
-        filename = f"Reporte_Meta_Ads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filename = f"Reporte_Galac_Ads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         return send_file(output, download_name=filename, as_attachment=True, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     except Exception as e:
         return redirect(url_for('index', msg=f"Error al generar archivo: {e}"))
