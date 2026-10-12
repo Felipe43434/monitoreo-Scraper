@@ -62,6 +62,7 @@ FUNCIONES_NUEVAS = {
     'formulario_empresas': '2026-10-11',
     'salud': '2026-10-11',
     'buscar_termino': '2026-10-11',
+    'palabras_excluidas': '2026-10-12',
 }
 
 def hoy_venezuela():
@@ -815,8 +816,8 @@ def limpiar_palabra_clave(texto):
         return None, f'"{texto}" es muy corta; usa al menos 2 letras.'
     return t, None
 
-# Exclusión de palabras frecuentes: por ahora solo Funciones Beta. Cada usuario tiene su propia lista.
-USUARIOS_EXCLUYEN_PALABRAS = (USUARIO_BETA,)
+# Exclusión de palabras frecuentes: todos los usuarios, cada uno con su propia lista.
+USUARIOS_EXCLUYEN_PALABRAS = tuple(USUARIOS)
 
 def palabras_excluidas_de(usuario):
     conn = get_db_connection()
@@ -1552,7 +1553,7 @@ HTML_TEMPLATE = """
                     {% if excluye_palabras %}
                     <li>
                         <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-bs-toggle="modal" data-bs-target="#modalPalabrasExcluidas">
-                            <i class="bi bi-eye-slash"></i> Palabras excluidas
+                            <i class="bi bi-eye-slash"></i> Palabras excluidas {{ nuevo('palabras_excluidas') }}
                             <span class="badge rounded-pill bg-secondary ms-auto">{{ palabras_excluidas|length }}</span>
                         </button>
                     </li>
@@ -2011,12 +2012,12 @@ HTML_TEMPLATE = """
 </div>
 
 {% if excluye_palabras %}
-<!-- Modal: palabras excluidas de "Términos Frecuentes" (Beta, una lista por usuario) -->
+<!-- Modal: palabras excluidas de "Términos Frecuentes" (una lista por usuario) -->
 <div class="modal fade" id="modalPalabrasExcluidas" tabindex="-1" aria-labelledby="palabrasExcluidasTitulo">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content card-custom">
             <div class="modal-header border-secondary border-opacity-25">
-                <h5 class="modal-title fw-bold" id="palabrasExcluidasTitulo"><i class="bi bi-eye-slash text-primary"></i> Palabras excluidas <span class="badge bg-warning text-dark fs-6 align-middle">BETA</span></h5>
+                <h5 class="modal-title fw-bold" id="palabrasExcluidasTitulo"><i class="bi bi-eye-slash text-primary"></i> Palabras excluidas</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
             </div>
             <div class="modal-body p-4" id="palabrasExcluidas">
@@ -2931,9 +2932,9 @@ HTML_TEMPLATE = """
         <!-- Panel 6: Términos Frecuentes -->
         <div class="tab-pane fade{% if pestana_activa == 'tab-keywords' %} show active{% endif %}" id="tab-keywords">
             {% if excluye_palabras %}
-            <!-- Palabras excluidas del usuario (Beta): se quitan aquí mismo o se editan en Configuración -->
+            <!-- Palabras excluidas del usuario: se quitan aquí mismo o se editan en Configuración -->
             <div class="card-custom px-3 py-2 mb-3 d-flex flex-wrap align-items-center gap-2 small">
-                <span class="fw-semibold text-nowrap"><i class="bi bi-eye-slash"></i> Palabras excluidas ({{ palabras_excluidas|length }}) <span class="badge bg-warning text-dark">BETA</span></span>
+                <span class="fw-semibold text-nowrap"><i class="bi bi-eye-slash"></i> Palabras excluidas ({{ palabras_excluidas|length }}) {{ nuevo('palabras_excluidas') }}</span>
                 {% for palabra in palabras_excluidas %}
                 <span class="badge bg-secondary-subtle text-secondary-emphasis d-inline-flex align-items-center gap-1">{{ palabra }}
                     <button type="button" class="btn-close palabra-restaurar-rapida" style="font-size: .5rem;" data-palabra="{{ palabra }}" title="Volver a mostrar" aria-label="Volver a mostrar «{{ palabra }}» en el ranking"></button>
@@ -3533,7 +3534,7 @@ HTML_TEMPLATE = """
         });
     })();
 
-    // Palabras excluidas de "Términos Frecuentes" (Beta): cada usuario tiene su lista. Desde la tabla se recarga el
+    // Palabras excluidas de "Términos Frecuentes": cada usuario tiene su lista. Desde la tabla se recarga el
     // ranking al momento; en la ventana de Configuración los cambios se ven al cerrarla.
     (function palabrasExcluidas() {
         const ventana = document.getElementById('modalPalabrasExcluidas');
