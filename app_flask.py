@@ -324,6 +324,15 @@ def init_config_tables():
                 cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS presente_en_meta BOOLEAN DEFAULT TRUE;")
                 cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fuente VARCHAR(20) DEFAULT 'Meta';")
                 cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fecha_ultima_vista VARCHAR(10);")
+                # Palabras que cada usuario del panel quitó de "Términos Frecuentes".
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS palabras_excluidas (
+                        usuario VARCHAR(50) NOT NULL,
+                        palabra VARCHAR(40) NOT NULL,
+                        fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (usuario, palabra)
+                    );
+                """)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS migraciones (
                         nombre VARCHAR(100) PRIMARY KEY,
@@ -805,6 +814,29 @@ def limpiar_palabra_clave(texto):
     if len(t.rstrip('*')) < 2:
         return None, f'"{texto}" es muy corta; usa al menos 2 letras.'
     return t, None
+
+# Exclusión de palabras frecuentes: por ahora solo Funciones Beta. Cada usuario tiene su propia lista.
+USUARIOS_EXCLUYEN_PALABRAS = (USUARIO_BETA,)
+
+def palabras_excluidas_de(usuario):
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT palabra FROM palabras_excluidas WHERE usuario = %s ORDER BY palabra;", (usuario,))
+            return [fila[0] for fila in cur.fetchall()]
+    except Exception as e:
+        print(f"Error leyendo las palabras excluidas: {e}")
+        return []
+    finally:
+        conn.close()
+
+def limpiar_palabra_excluida(texto):
+    palabra = str(texto or '').strip().lower()
+    if not re.fullmatch(r'[a-záéíóúüñ]{2,40}', palabra):
+        return None, 'Escribe una sola palabra, solo con letras (de 2 a 40).'
+    return palabra, None
 
 def json_login_required(f):
     @wraps(f)
@@ -1517,6 +1549,14 @@ HTML_TEMPLATE = """
                             <span class="badge rounded-pill bg-secondary ms-auto">{{ companias_bloqueadas|length }}</span>
                         </button>
                     </li>
+                    {% if excluye_palabras %}
+                    <li>
+                        <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-bs-toggle="modal" data-bs-target="#modalPalabrasExcluidas">
+                            <i class="bi bi-eye-slash"></i> Palabras excluidas
+                            <span class="badge rounded-pill bg-secondary ms-auto">{{ palabras_excluidas|length }}</span>
+                        </button>
+                    </li>
+                    {% endif %}
                     <li><hr class="dropdown-divider"></li>
                     <li><h6 class="dropdown-header">Apariencia</h6></li>
                     <li>
@@ -1969,6 +2009,37 @@ HTML_TEMPLATE = """
         </div>
     </div>
 </div>
+
+{% if excluye_palabras %}
+<!-- Modal: palabras excluidas de "Términos Frecuentes" (Beta, una lista por usuario) -->
+<div class="modal fade" id="modalPalabrasExcluidas" tabindex="-1" aria-labelledby="palabrasExcluidasTitulo">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content card-custom">
+            <div class="modal-header border-secondary border-opacity-25">
+                <h5 class="modal-title fw-bold" id="palabrasExcluidasTitulo"><i class="bi bi-eye-slash text-primary"></i> Palabras excluidas <span class="badge bg-warning text-dark fs-6 align-middle">BETA</span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+            </div>
+            <div class="modal-body p-4" id="palabrasExcluidas">
+                <p class="small text-muted mb-3">No aparecen en "Términos Frecuentes" ni en las palabras de Comparar. La lista es solo del usuario <strong>{{ usuario_nombre }}</strong>; los demás usuarios tienen la suya.</p>
+                <form class="input-group input-group-sm mb-2" id="palabraExcluirForm">
+                    <label for="palabraExcluirTexto" class="visually-hidden">Palabra a excluir</label>
+                    <input type="text" class="form-control" id="palabraExcluirTexto" maxlength="40" placeholder="Escribe una palabra (por ejemplo: gratis)" autocomplete="off">
+                    <button class="btn btn-primary" type="submit"><i class="bi bi-plus-lg"></i> Excluir</button>
+                </form>
+                <div class="small text-danger mb-2 d-none" id="palabraExcluirError" role="alert"></div>
+                <div class="d-flex flex-wrap gap-1" id="palabrasExcluidasLista">
+                    {% for palabra in palabras_excluidas %}
+                    <span class="badge bg-secondary-subtle text-secondary-emphasis d-inline-flex align-items-center gap-1 fs-6 fw-normal">{{ palabra }}
+                        <button type="button" class="btn-close palabra-restaurar" style="font-size: .55rem;" data-palabra="{{ palabra }}" title="Volver a mostrar" aria-label="Volver a mostrar «{{ palabra }}» en el ranking"></button>
+                    </span>
+                    {% endfor %}
+                </div>
+                <p class="small text-muted mb-0 mt-2{% if palabras_excluidas %} d-none{% endif %}" id="palabrasExcluidasVacio">Todavía no excluiste ninguna palabra.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 <!-- Modal: Gestión de Compañías Bloqueadas -->
 <div class="modal fade" id="modalBlockedCompanies" tabindex="-1" aria-labelledby="bloqueadasTitulo">
@@ -2453,7 +2524,6 @@ HTML_TEMPLATE = """
                             <tr class="small text-muted">
                                 <th>Empresa</th>
                                 <th class="text-center" style="width: 120px;">Campañas</th>
-                                <th class="text-center" style="width: 130px;" title="Días que cada campaña estuvo activa en el período, ponderados por plataformas y formato">Días-anuncio</th>
                                 <th style="width: 45%;">Participación</th>
                             </tr>
                         </thead>
@@ -2463,9 +2533,9 @@ HTML_TEMPLATE = """
                 <details class="small text-muted">
                     <summary>¿Cómo se calcula?</summary>
                     <ul class="mb-0 mt-1 ps-3">
-                        <li><strong>Días-anuncio:</strong> días que cada anuncio estuvo activo dentro del período, hasta la última vez que los bots lo vieron publicado. Las variantes de una misma campaña (mismo día de inicio y mismo texto) cuentan una sola vez.</li>
+                        <li>Se suman los días que cada anuncio estuvo activo dentro del período, hasta la última vez que los bots lo vieron publicado. Las variantes de una misma campaña (mismo día de inicio y mismo texto) cuentan una sola vez.</li>
                         <li>Cada plataforma extra suma 25 % (hasta +50 %) y los videos suman 20 %, porque suelen costar más.</li>
-                        <li><strong>Participación:</strong> parte de los días-anuncio de todas las empresas.</li>
+                        <li><strong>Participación:</strong> parte de esos días que corresponde a cada empresa, sobre el total de todas.</li>
                         <li>Usa los filtros del panel. Los anuncios de Meta sin fecha de última vista no se cuentan{% if participacion_data.sin_fin %} ({{ participacion_data.sin_fin.values()|sum }} en total){% endif %}. Si Meta no dejó cargar todos los anuncios de una empresa (pasa con Fina), su participación queda por debajo.</li>
                     </ul>
                 </details>
@@ -2860,6 +2930,20 @@ HTML_TEMPLATE = """
 
         <!-- Panel 6: Términos Frecuentes -->
         <div class="tab-pane fade{% if pestana_activa == 'tab-keywords' %} show active{% endif %}" id="tab-keywords">
+            {% if excluye_palabras %}
+            <!-- Palabras excluidas del usuario (Beta): se quitan aquí mismo o se editan en Configuración -->
+            <div class="card-custom px-3 py-2 mb-3 d-flex flex-wrap align-items-center gap-2 small">
+                <span class="fw-semibold text-nowrap"><i class="bi bi-eye-slash"></i> Palabras excluidas ({{ palabras_excluidas|length }}) <span class="badge bg-warning text-dark">BETA</span></span>
+                {% for palabra in palabras_excluidas %}
+                <span class="badge bg-secondary-subtle text-secondary-emphasis d-inline-flex align-items-center gap-1">{{ palabra }}
+                    <button type="button" class="btn-close palabra-restaurar-rapida" style="font-size: .5rem;" data-palabra="{{ palabra }}" title="Volver a mostrar" aria-label="Volver a mostrar «{{ palabra }}» en el ranking"></button>
+                </span>
+                {% else %}
+                <span class="text-muted">Ninguna todavía. Usa <i class="bi bi-eye-slash"></i> en la lista de términos para quitar una.</span>
+                {% endfor %}
+                <button type="button" class="btn btn-sm btn-outline-secondary ms-auto text-nowrap" data-bs-toggle="modal" data-bs-target="#modalPalabrasExcluidas"><i class="bi bi-pencil"></i> Editar lista</button>
+            </div>
+            {% endif %}
             <div class="row g-3">
                 <div class="col-lg-7">
                     <div class="card-custom p-3 h-100 d-flex flex-column">
@@ -2872,7 +2956,7 @@ HTML_TEMPLATE = """
                 <div class="col-lg-5">
                     <div class="card-custom p-3 h-100">
                         <h6 class="fw-bold mb-1"><i class="bi bi-tags"></i> Buscar por Término {{ nuevo('buscar_termino') }}</h6>
-                        <p class="small text-muted mb-3">Haz clic en un término para ver los anuncios que lo usan.</p>
+                        <p class="small text-muted mb-3">Haz clic en un término para ver los anuncios que lo usan.{% if excluye_palabras %} Con <i class="bi bi-eye-slash"></i> lo quitas del ranking.{% endif %}</p>
                         <div class="table-responsive" style="max-height: 560px; overflow-y: auto;">
                             <table class="table table-sm table-hover align-middle">
                                 <thead class="table-light">
@@ -2880,6 +2964,7 @@ HTML_TEMPLATE = """
                                         <th>#</th>
                                         <th>Palabra Clave</th>
                                         <th class="text-end">Apariciones</th>
+                                        {% if excluye_palabras %}<th class="text-end" data-sin-orden><span class="visually-hidden">Excluir</span></th>{% endif %}
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2888,10 +2973,15 @@ HTML_TEMPLATE = """
                                         <td class="text-muted small">{{ loop.index }}</td>
                                         <td class="fw-semibold text-primary"><a class="termino-link" href="{{ url_con_filtros(q=palabra, pestana='tab-ads') }}">{{ palabra }}</a></td>
                                         <td class="text-end fw-bold">{{ conteo }}</td>
+                                        {% if excluye_palabras %}
+                                        <td class="text-end" style="width: 1%;">
+                                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2 palabra-excluir" data-palabra="{{ palabra }}" title="Quitar del ranking" aria-label="Quitar «{{ palabra }}» del ranking"><i class="bi bi-eye-slash"></i></button>
+                                        </td>
+                                        {% endif %}
                                     </tr>
                                     {% else %}
                                     <tr>
-                                        <td colspan="3" class="text-center text-muted py-3">No hay texto suficiente para analizar</td>
+                                        <td colspan="{{ 4 if excluye_palabras else 3 }}" class="text-center text-muted py-3">No hay texto suficiente para analizar</td>
                                     </tr>
                                     {% endfor %}
                                 </tbody>
@@ -3443,6 +3533,83 @@ HTML_TEMPLATE = """
         });
     })();
 
+    // Palabras excluidas de "Términos Frecuentes" (Beta): cada usuario tiene su lista. Desde la tabla se recarga el
+    // ranking al momento; en la ventana de Configuración los cambios se ven al cerrarla.
+    (function palabrasExcluidas() {
+        const ventana = document.getElementById('modalPalabrasExcluidas');
+        if (!ventana) return;
+        const error = document.getElementById('palabraExcluirError');
+        const lista = document.getElementById('palabrasExcluidasLista');
+        const vacio = document.getElementById('palabrasExcluidasVacio');
+        let cambiado = false;
+        async function guardar(accion, palabra) {
+            const r = await fetch('/palabras_excluidas/' + accion, {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({palabra}),
+            });
+            const datos = await r.json().catch(() => ({}));
+            if (!r.ok || !datos.ok) throw new Error(datos.error || 'No se pudo guardar el cambio.');
+        }
+        function recargar() {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('msg');
+            window.location.replace(url);
+        }
+        function chip(palabra) {
+            const caja = document.createElement('span');
+            caja.className = 'badge bg-secondary-subtle text-secondary-emphasis d-inline-flex align-items-center gap-1 fs-6 fw-normal';
+            caja.append(palabra + ' ');
+            const x = document.createElement('button');
+            x.type = 'button'; x.className = 'btn-close palabra-restaurar'; x.style.fontSize = '.55rem';
+            x.dataset.palabra = palabra; x.title = 'Volver a mostrar';
+            x.setAttribute('aria-label', `Volver a mostrar «${palabra}» en el ranking`);
+            caja.appendChild(x);
+            return caja;
+        }
+        const mostrarError = mensaje => { error.textContent = mensaje; error.classList.toggle('d-none', !mensaje); };
+        document.addEventListener('click', async e => {
+            const quitar = e.target.closest('.palabra-excluir');
+            if (quitar) {
+                quitar.disabled = true;
+                try { await guardar('agregar', quitar.dataset.palabra); recargar(); }
+                catch (err) { quitar.disabled = false; alert(err.message); }
+                return;
+            }
+            const rapida = e.target.closest('.palabra-restaurar-rapida');
+            if (rapida) {
+                rapida.disabled = true;
+                try { await guardar('quitar', rapida.dataset.palabra); recargar(); }
+                catch (err) { rapida.disabled = false; alert(err.message); }
+                return;
+            }
+            const restaurar = e.target.closest('.palabra-restaurar');
+            if (restaurar) {
+                restaurar.disabled = true;
+                try {
+                    await guardar('quitar', restaurar.dataset.palabra);
+                    restaurar.closest('.badge').remove();
+                    vacio.classList.toggle('d-none', lista.children.length > 0);
+                    cambiado = true;
+                    mostrarError('');
+                } catch (err) { restaurar.disabled = false; mostrarError(err.message); }
+            }
+        });
+        document.getElementById('palabraExcluirForm').addEventListener('submit', async e => {
+            e.preventDefault();
+            const campo = document.getElementById('palabraExcluirTexto');
+            const palabra = campo.value.trim().toLowerCase();
+            if (!palabra) return;
+            try {
+                await guardar('agregar', palabra);
+                if (![...lista.querySelectorAll('.palabra-restaurar')].some(b => b.dataset.palabra === palabra)) lista.appendChild(chip(palabra));
+                vacio.classList.add('d-none');
+                campo.value = '';
+                cambiado = true;
+                mostrarError('');
+            } catch (err) { mostrarError(err.message); }
+        });
+        ventana.addEventListener('hidden.bs.modal', () => { if (cambiado) recargar(); });
+    })();
+
     // Editor simplificado de categorías de producto (todos los usuarios).
     (function editorCategorias() {
         const categorias = {{ categorias_config|tojson }};
@@ -3732,14 +3899,13 @@ HTML_TEMPLATE = """
             const filas = Object.values(participacion.calcular().porCompania).sort((a, b) => b.diasAnuncio - a.diasAnuncio);
             cuerpo.innerHTML = '';
             if (!filas.length) {
-                cuerpo.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">No hay anuncios activos en el período con los filtros actuales.</td></tr>';
+                cuerpo.innerHTML = '<tr><td colspan="3" class="text-center text-muted py-4">No hay anuncios activos en el período con los filtros actuales.</td></tr>';
                 return;
             }
             filas.forEach(e => {
                 const tr = cuerpo.insertRow();
                 tr.innerHTML = `<td class="fw-bold"></td>
                     <td class="text-center"><button type="button" class="btn btn-link btn-sm p-0 text-decoration-none" aria-expanded="false">${e.campanas} <i class="bi bi-chevron-down small" aria-hidden="true"></i></button></td>
-                    <td class="text-center">${Math.round(e.diasAnuncio).toLocaleString('es-VE')}</td>
                     <td style="min-width: 220px;"><div class="d-flex align-items-center gap-3">
                         <div class="progress flex-grow-1" style="height: 8px;" aria-hidden="true"><div class="progress-bar" style="width: ${e.pct}%;"></div></div>
                         <span class="small fw-semibold text-nowrap text-end" style="width: 3.8rem;">${e.pct.toLocaleString('es-VE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %</span></div></td>`;
@@ -3753,7 +3919,7 @@ HTML_TEMPLATE = """
                     const detalle = document.createElement('tr');
                     detalle.className = 'campanas-empresa';
                     const celda = detalle.insertCell();
-                    celda.colSpan = 4;
+                    celda.colSpan = 3;
                     const lista = document.createElement('ul');
                     lista.className = 'list-unstyled small mb-0 d-flex flex-column gap-1';
                     e.lista.sort((a, b) => b.valor - a.valor).forEach(c => {
@@ -4903,6 +5069,10 @@ def index():
             for t in tokens:
                 palabras_empresas.add(t)
 
+    excluye_palabras = usuario_actual() in USUARIOS_EXCLUYEN_PALABRAS
+    palabras_excluidas = palabras_excluidas_de(usuario_actual()) if excluye_palabras else []
+    palabras_ignoradas = palabras_empresas | set(palabras_excluidas)
+
     palabras_encontradas = []
     for a in anuncios:
         # Los anuncios de Google sin título de YouTube solo traen un título generado por el bot.
@@ -4912,13 +5082,13 @@ def index():
         palabras = re.findall(r'[a-záéíóúñ]{4,}', texto_completo)
         palabras_limpias = [
             p for p in palabras 
-            if p not in STOPWORDS_ES and p not in palabras_empresas
+            if p not in STOPWORDS_ES and p not in palabras_ignoradas
         ]
         palabras_encontradas.extend(palabras_limpias)
 
     contador_palabras = Counter(palabras_encontradas)
     top_palabras = contador_palabras.most_common(20)
-    comparativa = comparativa_empresas(anuncios, palabras_empresas)
+    comparativa = comparativa_empresas(anuncios, palabras_ignoradas)
 
     keywords_chart_data = {
         "labels": [p[0].capitalize() for p in top_palabras],
@@ -4967,6 +5137,8 @@ def index():
         total_winning=total_winning,
         total_retirados=total_retirados,
         top_palabras=top_palabras,
+        excluye_palabras=excluye_palabras,
+        palabras_excluidas=palabras_excluidas,
         keywords_chart_data=keywords_chart_data,
         timeline_data_historico=timeline_data_historico,
         timeline_data_actual=timeline_data_actual,
@@ -5105,6 +5277,34 @@ def guardar_urls_google():
     if success:
         return redirect(url_for('index', msg="✅ Archivo urls_google.txt guardado en GitHub exitosamente."))
     return redirect(url_for('index', msg=f"❌ {message}"))
+
+@app.route('/palabras_excluidas/<accion>', methods=['POST'])
+@json_login_required
+def editar_palabras_excluidas(accion):
+    usuario = usuario_actual()
+    if usuario not in USUARIOS_EXCLUYEN_PALABRAS:
+        return {'ok': False, 'error': 'Esta función todavía no está disponible para tu usuario.'}, 403
+    if accion not in ('agregar', 'quitar'):
+        abort(404)
+    palabra, error = limpiar_palabra_excluida((request.get_json(silent=True) or {}).get('palabra'))
+    if error:
+        return {'ok': False, 'error': error}, 400
+    conn = get_db_connection()
+    if not conn:
+        return {'ok': False, 'error': 'No se pudo conectar a la base de datos.'}, 503
+    try:
+        with conn.cursor() as cur:
+            if accion == 'agregar':
+                cur.execute("INSERT INTO palabras_excluidas (usuario, palabra) VALUES (%s, %s) ON CONFLICT DO NOTHING;", (usuario, palabra))
+            else:
+                cur.execute("DELETE FROM palabras_excluidas WHERE usuario = %s AND palabra = %s;", (usuario, palabra))
+        conn.commit()
+    except Exception as e:
+        print(f"Error guardando las palabras excluidas: {e}")
+        return {'ok': False, 'error': 'No se pudo guardar el cambio.'}, 500
+    finally:
+        conn.close()
+    return {'ok': True}
 
 @app.route('/productos/guardar', methods=['POST'])
 @json_login_required
