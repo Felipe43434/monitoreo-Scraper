@@ -1330,10 +1330,39 @@ HTML_TEMPLATE = """
         @media (prefers-reduced-motion: reduce) { .diseno-v2 .aviso-destacado { animation: none; } }
         .diseno-v2 .barra-pestanas { border-bottom: 1px solid var(--border-color); }
         .diseno-v2 .barra-pestanas .nav-tabs { border-bottom: 0; }
-        :root:not([data-bs-theme="dark"]) .diseno-v2 .barra-pestanas .btn-outline-info {
+        :root:not([data-bs-theme="dark"]) .diseno-v2 .btn-outline-info {
             --bs-btn-color: #0e7490; --bs-btn-border-color: #0e7490;
             --bs-btn-hover-bg: #0e7490; --bs-btn-hover-border-color: #0e7490; --bs-btn-hover-color: #fff;
         }
+        /* Contraste mínimo 4.5:1 en texto y 3:1 en bordes y foco (auditoría de accesibilidad) */
+        :root:not([data-bs-theme="dark"]) .diseno-v2 { --bs-link-color: #0b5ed7; --bs-link-color-rgb: 11, 94, 215; }
+        :root:not([data-bs-theme="dark"]) .diseno-v2 .text-danger:not(.navbar *) { color: #b91c1c !important; }
+        :root:not([data-bs-theme="dark"]) .diseno-v2 .text-primary:not(.navbar *) { color: #1d4ed8 !important; }
+        [data-bs-theme="dark"] .diseno-v2 .text-primary:not(.navbar *) { color: #6ea8fe !important; }
+        [data-bs-theme="dark"] .diseno-v2 .text-secondary:not(.navbar *) { color: #cbd5e1 !important; }
+        .diseno-v2 .badge.text-light { color: #fff !important; }
+        .diseno-v2 .badge.bg-primary { background-color: #0b5ed7 !important; }
+        .diseno-v2 .badge.bg-danger { background-color: #b91c1c !important; }
+        .diseno-v2 .badge.bg-success { background-color: #157347 !important; }
+        .diseno-v2 .badge[style*="f09433"] { background: linear-gradient(45deg, #c2410c, #be123c, #9d174d) !important; }
+        .diseno-v2 .badge[style*="25d366"] { background: #15803d !important; }
+        .diseno-v2 .bg-danger-subtle.text-danger { color: var(--bs-danger-text-emphasis) !important; }
+        .diseno-v2 .bg-secondary-subtle.text-secondary { color: var(--bs-secondary-text-emphasis) !important; }
+        .diseno-v2 .bg-success-subtle.text-success { color: var(--bs-success-text-emphasis) !important; }
+        [data-bs-theme="dark"] .diseno-v2 .btn-outline-secondary {
+            --bs-btn-color: #cbd5e1; --bs-btn-border-color: #64748b;
+            --bs-btn-hover-bg: #475569; --bs-btn-hover-border-color: #64748b; --bs-btn-hover-color: #fff;
+        }
+        [data-bs-theme="dark"] .diseno-v2 .btn-outline-primary {
+            --bs-btn-color: #6ea8fe; --bs-btn-border-color: #6ea8fe;
+            --bs-btn-hover-bg: #6ea8fe; --bs-btn-hover-border-color: #6ea8fe; --bs-btn-hover-color: #0b1120;
+        }
+        .diseno-v2 { --anillo-foco: #2563eb; }
+        [data-bs-theme="dark"] .diseno-v2 { --anillo-foco: #60a5fa; }
+        .diseno-v2 .form-control, .diseno-v2 .form-select { border-color: #8a94a6; }
+        [data-bs-theme="dark"] .diseno-v2 .form-control, [data-bs-theme="dark"] .diseno-v2 .form-select { border-color: #6b7a90; }
+        .diseno-v2 :focus-visible { outline: 2px solid var(--anillo-foco) !important; outline-offset: 2px; }
+        .diseno-v2 .form-control:focus, .diseno-v2 .form-select:focus { border-color: var(--anillo-foco); }
         @media (max-width: 420px) {
             .diseno-v2 .navbar-brand { font-size: 1rem; margin-right: 0; }
             .diseno-v2 .navbar-brand > i { display: none; }
@@ -1355,6 +1384,7 @@ HTML_TEMPLATE = """
     </script>
 </head>
 <body class="{% if es_beta %}diseno-v2{% endif %}">
+<a href="#contenido" class="visually-hidden-focusable btn btn-primary position-absolute top-0 start-0 m-2" style="z-index: 2000;">Saltar al contenido</a>
 {% set c_win = 'warning' if es_beta else 'danger' %}
 {% if es_beta %}<script>try { if (sessionStorage.getItem('filtroAuto')) document.body.classList.add('filtro-recargado'); } catch (e) {}</script>{% endif %}
 
@@ -1476,11 +1506,11 @@ HTML_TEMPLATE = """
 
 {% if puede_cambiar_usuario %}
 <!-- Modal: Cambiar de usuario (solo sesiones iniciadas como Administrador o Funciones Beta) -->
-<div class="modal fade" id="modalCambiarUsuario" tabindex="-1">
+<div class="modal fade" id="modalCambiarUsuario" tabindex="-1" aria-labelledby="cambiarUsuarioTitulo">
     <div class="modal-dialog modal-sm modal-dialog-centered">
         <form class="modal-content card-custom" method="POST" action="/cambiar_usuario">
             <div class="modal-header border-secondary border-opacity-25">
-                <h5 class="modal-title fw-bold"><i class="bi bi-people text-primary"></i> Cambiar de Usuario</h5>
+                <h5 class="modal-title fw-bold" id="cambiarUsuarioTitulo"><i class="bi bi-people text-primary"></i> Cambiar de Usuario</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
             </div>
             <div class="modal-body">
@@ -1553,12 +1583,12 @@ HTML_TEMPLATE = """
             <div class="modal-body">
                 <div class="card-custom p-3 mb-3 comparar-selector">
                     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
-                        <span class="small fw-semibold" id="compararTitulo">Elige 2 o más compañías</span>
+                        <span class="small fw-semibold" id="compararElegir">Elige 2 o más compañías</span>
                         <span class="small text-muted">Se usan los filtros del panel (fuente, tiempo, producto, búsqueda…).</span>
                     </div>
                     <div class="d-flex flex-wrap align-items-center gap-2">
                         <div class="dropdown flex-grow-1" style="max-width: 460px;">
-                            <button id="btnComparar" aria-labelledby="compararTitulo btnComparar" aria-expanded="false" class="form-select form-select-sm text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                            <button id="btnComparar" aria-labelledby="compararElegir btnComparar" aria-expanded="false" class="form-select form-select-sm text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
                                 <span class="text-truncate" id="compararEtiqueta">Elegir compañías</span>
                             </button>
                             <div class="dropdown-menu dropdown-menu-scroll p-2 w-100 shadow-lg" id="compararSelector"></div>
@@ -1568,7 +1598,7 @@ HTML_TEMPLATE = """
                             Exportar a Excel
                         </button>
                     </div>
-                    <div id="compararAviso" class="small text-warning mt-2 d-none"></div>
+                    <div id="compararAviso" class="small text-warning mt-2 d-none" role="alert"></div>
                 </div>
                 <div id="compararContenido" class="d-none">
                     <div class="card-custom overflow-hidden mb-3">
@@ -1615,12 +1645,12 @@ HTML_TEMPLATE = """
 {% endif %}
 
 <!-- Modal: Editor urls.txt en GitHub -->
-<div class="modal fade" id="modalConfigUrls" tabindex="-1">
+<div class="modal fade" id="modalConfigUrls" tabindex="-1" aria-labelledby="configUrlsTitulo">
     <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content card-custom">
             <div class="modal-header border-secondary border-opacity-25">
-                <h5 class="modal-title fw-bold"><i class="bi bi-file-earmark-text text-primary"></i> {% if es_beta %}Empresas, URLs y productos{% elif puede_editar_urls or usa_formulario_empresas %}Editor de URLs (GitHub){% else %}Categorías de producto{% endif %}</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <h5 class="modal-title fw-bold" id="configUrlsTitulo"><i class="bi bi-file-earmark-text text-primary"></i> {% if es_beta %}Empresas, URLs y productos{% elif puede_editar_urls or usa_formulario_empresas %}Editor de URLs (GitHub){% else %}Categorías de producto{% endif %}</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
             </div>
             <div class="modal-body p-4">
                 {% set pestana_config = 'empresas' if usa_formulario_empresas else ('meta' if puede_editar_urls else 'categorias') %}
@@ -1677,8 +1707,8 @@ HTML_TEMPLATE = """
                                         </td>
                                         <td class="small">{% for g in e.google %}<span class="badge bg-info-subtle text-info-emphasis me-1">{{ g }}</span>{% else %}<span class="text-muted">—</span>{% endfor %}</td>
                                         <td class="text-end text-nowrap">
-                                            <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2 empresa-editar" data-indice="{{ loop.index0 }}" title="Editar"><i class="bi bi-pencil"></i></button>
-                                            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 empresa-eliminar" data-nombre="{{ e.nombre }}" title="Dejar de monitorear"><i class="bi bi-trash3"></i></button>
+                                            <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2 empresa-editar" data-indice="{{ loop.index0 }}" title="Editar" aria-label="Editar {{ e.nombre }}"><i class="bi bi-pencil" aria-hidden="true"></i></button>
+                                            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 empresa-eliminar" data-nombre="{{ e.nombre }}" title="Dejar de monitorear" aria-label="Dejar de monitorear {{ e.nombre }}"><i class="bi bi-trash3" aria-hidden="true"></i></button>
                                         </td>
                                     </tr>
                                     {% else %}
@@ -1698,8 +1728,8 @@ HTML_TEMPLATE = """
                             <div class="form-text">Así aparecerá en el dashboard. Úsalo igual en Meta y Google para que se agrupen.</div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label small fw-semibold"><i class="bi bi-meta"></i> Páginas de Meta (Facebook / Instagram)</label>
-                            <div id="empresaMeta" class="d-flex flex-column gap-2"></div>
+                            <label id="etiquetaEmpresaMeta" class="form-label small fw-semibold"><i class="bi bi-meta"></i> Páginas de Meta (Facebook / Instagram)</label>
+                            <div id="empresaMeta" class="d-flex flex-column gap-2" role="group" aria-labelledby="etiquetaEmpresaMeta"></div>
                             <button type="button" class="btn btn-link btn-sm px-0" id="empresaMasMeta"><i class="bi bi-plus"></i> Agregar otra página</button>
                             <details class="small text-muted">
                                 <summary>¿Cómo consigo el enlace de la página?</summary>
@@ -1712,12 +1742,12 @@ HTML_TEMPLATE = """
                             </details>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label small fw-semibold"><i class="bi bi-google"></i> Sitios web para Google</label>
-                            <div id="empresaGoogle" class="d-flex flex-column gap-2"></div>
+                            <label id="etiquetaEmpresaGoogle" class="form-label small fw-semibold"><i class="bi bi-google"></i> Sitios web para Google</label>
+                            <div id="empresaGoogle" class="d-flex flex-column gap-2" role="group" aria-labelledby="etiquetaEmpresaGoogle"></div>
                             <button type="button" class="btn btn-link btn-sm px-0" id="empresaMasGoogle"><i class="bi bi-plus"></i> Agregar otro sitio</button>
                             <div class="form-text">Pega la dirección de su web (sirve cualquier página del sitio); se guarda solo el dominio, por ejemplo <code>galac.com</code>.</div>
                         </div>
-                        <div class="alert alert-danger small py-2 d-none" id="empresaError"></div>
+                        <div class="alert alert-danger small py-2 d-none" id="empresaError" role="alert"></div>
                         <div class="d-flex justify-content-end gap-2">
                             <button type="button" class="btn btn-sm btn-outline-secondary" id="empresaCancelar">Cancelar</button>
                             <button type="submit" class="btn btn-sm btn-primary" id="empresaGuardar"><i class="bi bi-cloud-arrow-up"></i> Guardar</button>
@@ -1743,8 +1773,8 @@ HTML_TEMPLATE = """
                                             {% if c.palabras|length > 8 %}<span class="text-muted">+{{ c.palabras|length - 8 }} más</span>{% endif %}
                                         </td>
                                         <td class="text-end text-nowrap">
-                                            <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2 categoria-editar" data-indice="{{ loop.index0 }}" title="Editar"><i class="bi bi-pencil"></i></button>
-                                            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 categoria-eliminar" data-nombre="{{ c.nombre }}" title="Eliminar"><i class="bi bi-trash3"></i></button>
+                                            <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2 categoria-editar" data-indice="{{ loop.index0 }}" title="Editar" aria-label="Editar {{ c.nombre }}"><i class="bi bi-pencil" aria-hidden="true"></i></button>
+                                            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 categoria-eliminar" data-nombre="{{ c.nombre }}" title="Eliminar" aria-label="Eliminar {{ c.nombre }}"><i class="bi bi-trash3" aria-hidden="true"></i></button>
                                         </td>
                                     </tr>
                                     {% else %}
@@ -1773,7 +1803,7 @@ HTML_TEMPLATE = """
                             <input type="text" class="form-control form-control-sm" id="categoriaPrueba" placeholder="Pega el texto de un anuncio para ver si entraría en esta categoría">
                             <div class="form-text" id="categoriaResultado"></div>
                         </div>
-                        <div class="alert alert-danger small py-2 d-none" id="categoriaError"></div>
+                        <div class="alert alert-danger small py-2 d-none" id="categoriaError" role="alert"></div>
                         <div class="d-flex justify-content-end gap-2">
                             <button type="button" class="btn btn-sm btn-outline-secondary" id="categoriaCancelar">Cancelar</button>
                             <button type="submit" class="btn btn-sm btn-primary" id="categoriaGuardar"><i class="bi bi-cloud-arrow-up"></i> Guardar</button>
@@ -1910,11 +1940,11 @@ HTML_TEMPLATE = """
 </div>
 
 <!-- Modal: Gestión de Compañías Bloqueadas -->
-<div class="modal fade" id="modalBlockedCompanies" tabindex="-1">
+<div class="modal fade" id="modalBlockedCompanies" tabindex="-1" aria-labelledby="bloqueadasTitulo">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content card-custom">
             <div class="modal-header border-secondary border-opacity-25">
-                <h5 class="modal-title fw-bold text-danger"><i class="bi bi-slash-circle"></i> Compañías Bloqueadas</h5>
+                <h5 class="modal-title fw-bold text-danger" id="bloqueadasTitulo"><i class="bi bi-slash-circle"></i> Compañías Bloqueadas</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
             </div>
             <div class="modal-body p-4">
@@ -1976,7 +2006,8 @@ HTML_TEMPLATE = """
 </div>
 {% endif %}
 
-<div class="container-fluid px-4 py-4">
+<main id="contenido" class="container-fluid px-4 py-4" tabindex="-1">
+    <h1 class="visually-hidden">Gálac Ads Intelligence: anuncios de la competencia</h1>
 
     {% if msg and es_beta %}
     <div class="alert alert-dismissible fade show aviso-destacado d-flex align-items-center gap-3" role="status">
@@ -1987,7 +2018,7 @@ HTML_TEMPLATE = """
     {% elif msg %}
     <div class="alert alert-info alert-dismissible fade show border-0 shadow-sm" role="alert">
         {{ msg }}
-        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Cerrar"></button>
     </div>
     {% endif %}
 
@@ -2114,6 +2145,7 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
+{% set filtro_duracion %}
             <!-- 4. Filtro Duración del Video -->
             <div class="col-6 col-md-2 col-lg-1{% if es_beta %} filtro-extra{% endif %}">
                 <label for="filtroDuracion" class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-stopwatch"></i> Duración</label>
@@ -2126,6 +2158,8 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
+{% endset %}{% if not es_beta %}{{ filtro_duracion }}{% endif %}
+
             <!-- 5. Filtro Estado -->
             <div class="col-6 col-md-2 col-lg-1">
                 <label for="filtroEstado" class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-toggle-on"></i> Estado</label>
@@ -2136,6 +2170,7 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
+{% set filtros_plataforma_formato %}
             <!-- 6. Filtro Plataforma -->
             <div class="col-6 col-md-3 col-lg-2{% if es_beta %} filtro-extra{% endif %}">
                 <label for="filtroPlataforma" class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-share"></i> Plataforma</label>
@@ -2173,6 +2208,8 @@ HTML_TEMPLATE = """
                 </select>
             </div>
 
+{% endset %}{% if not es_beta %}{{ filtros_plataforma_formato }}{% endif %}
+
             <div class="col-6 col-md-3 col-lg-1">
                 <label for="filtroFuente" class="form-label small fw-semibold text-muted mb-1"><i class="bi bi-diagram-3"></i> Fuente</label>
                 <select name="fuente" id="filtroFuente" class="form-select form-select-sm">
@@ -2207,8 +2244,8 @@ HTML_TEMPLATE = """
             <!-- 8. Botones de Acción -->
             <div class="col-12 {{ 'col-lg-auto flex-wrap' if es_beta else 'col-lg-2' }} d-flex gap-1">
                 {% if es_beta %}
-                <span id="estadoFiltros" class="small text-muted d-none align-items-center justify-content-center gap-1 px-1 text-nowrap"></span>
-                <button type="button" id="btnMasFiltros" class="btn btn-sm btn-outline-secondary text-nowrap d-flex align-items-center gap-1" aria-expanded="{{ 'true' if n_extra else 'false' }}" title="Duración, plataforma y formato">
+                <span id="estadoFiltros" class="small text-muted d-none align-items-center justify-content-center gap-1 px-1 text-nowrap" role="status"></span>
+                <button type="button" id="btnMasFiltros" aria-controls="filtroDuracion filtroPlataforma filtroFormato" class="btn btn-sm btn-outline-secondary text-nowrap d-flex align-items-center gap-1" aria-expanded="{{ 'true' if n_extra else 'false' }}" title="Duración, plataforma y formato">
                     <i class="bi bi-sliders"></i> Más filtros{% if n_extra %} ({{ n_extra }}){% endif %}
                 </button>
                 {% else %}
@@ -2225,6 +2262,7 @@ HTML_TEMPLATE = """
                 <a href="/descargar_excel?{{ request.query_string.decode() }}" class="btn btn-sm btn-success text-nowrap" title="Descargar Excel" aria-label="Descargar Excel"><i class="bi bi-file-earmark-excel"></i></a>
                 {% endif %}
             </div>
+            {% if es_beta %}{{ filtro_duracion }}{{ filtros_plataforma_formato }}{% endif %}
         </form>
         {% if es_beta %}
         {% set nombres_filtro = {'q': 'Búsqueda', 'compania': 'Compañía', 'tiempo': 'Tiempo', 'duracion': 'Duración', 'estado': 'Estado', 'plataforma': 'Plataforma', 'formato': 'Formato', 'fuente': 'Fuente', 'producto': 'Producto'} %}
@@ -2305,15 +2343,15 @@ HTML_TEMPLATE = """
                         <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
                             <h6 class="fw-bold m-0"><i class="bi bi-graph-up"></i> {{ 'Anuncios Nuevos por Empresa' if es_beta else 'Publicación de Anuncios por Empresa' }}</h6>
                             <div class="d-flex flex-wrap gap-2">
-                                <div class="btn-group btn-group-sm" role="group" id="timelineModoFilter">
-                                    <button type="button" class="btn btn-primary active" onclick="setTimelineModo('historico', this)">{{ 'Todos' if es_beta else 'Históricos' }}</button>
-                                    <button type="button" class="btn btn-outline-secondary" onclick="setTimelineModo('actual', this)" title="Anuncios que siguen {{ 'activos' if es_beta else 'publicados' }} en Meta o Google">{{ 'Vigentes' if es_beta else 'Actuales' }}</button>
+                                <div class="btn-group btn-group-sm" role="group" id="timelineModoFilter" aria-label="Anuncios a mostrar">
+                                    <button type="button" class="btn btn-primary active" aria-pressed="true" onclick="setTimelineModo('historico', this)">{{ 'Todos' if es_beta else 'Históricos' }}</button>
+                                    <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="setTimelineModo('actual', this)" title="Anuncios que siguen {{ 'activos' if es_beta else 'publicados' }} en Meta o Google">{{ 'Vigentes' if es_beta else 'Actuales' }}</button>
                                 </div>
-                                <div class="btn-group btn-group-sm" role="group" id="timeRangeFilter">
-                                    <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(7, this)">7D</button>
-                                    <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(30, this)">30D</button>
-                                    <button type="button" class="btn btn-outline-secondary" onclick="filterTimeline(365, this)">1A</button>
-                                    <button type="button" class="btn btn-primary active" onclick="filterTimeline(0, this)">Todo</button>
+                                <div class="btn-group btn-group-sm" role="group" id="timeRangeFilter" aria-label="Período del gráfico">
+                                    <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="filterTimeline(7, this)">7D</button>
+                                    <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="filterTimeline(30, this)">30D</button>
+                                    <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="filterTimeline(365, this)">1A</button>
+                                    <button type="button" class="btn btn-primary active" aria-pressed="true" onclick="filterTimeline(0, this)">Todo</button>
                                 </div>
                             </div>
                         </div>
@@ -2835,11 +2873,61 @@ HTML_TEMPLATE = """
         </div>
 
     </div>
-</div>
+</main>
 
 <script>
     const disenoV2 = document.body.classList.contains('diseno-v2');
     const reducirMovimiento = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // Gráficos (todos): cada canvas se presenta como imagen con un resumen de sus datos para lectores de pantalla.
+    Chart.register({
+        id: 'resumenAccesible',
+        afterUpdate(chart) {
+            const canvas = chart.canvas;
+            const titulo = (canvas.closest('.card-custom')?.querySelector('h6')?.innerText || 'Gráfico').replace(/\\s*BETA\\s*$/, '').trim();
+            const etiquetas = chart.data.labels || [];
+            const series = chart.data.datasets || [];
+            const numero = v => Number(v && typeof v === 'object' ? v.y ?? v.x : v) || 0;
+            const partes = series.length === 1
+                ? etiquetas.slice(0, 20).map((e, i) => `${e}: ${numero(series[0].data[i])}`)
+                : series.slice(0, 12).map(serie => `${serie.label}: ${(serie.data || []).reduce((suma, v) => suma + numero(v), 0)} en total`);
+            canvas.setAttribute('role', 'img');
+            canvas.setAttribute('aria-label', `${titulo}. ${partes.join('; ') || 'Sin datos'}.`);
+        },
+    });
+    if (disenoV2) {
+        // Beta: tonos más oscuros para que barras, líneas y sectores tengan al menos 3:1 de contraste.
+        const tonoAccesible = {
+            '#f59e0b': '#d97706', '#10b981': '#059669', '#06b6d4': '#0891b2', '#0ea5e9': '#0284c7', '#84cc16': '#65a30d',
+            '#14b8a6': '#0d9488', '#f472b6': '#db2777', '#ec4899': '#be185d', '#25d366': '#16a34a', '#a855f7': '#9333ea', '#f97316': '#ea580c',
+        };
+        const cambiarTono = c => typeof c === 'string' ? (tonoAccesible[c.toLowerCase()] || c) : c;
+        Chart.register({
+            id: 'coloresAccesibles',
+            beforeUpdate(chart) {
+                chart.data.datasets.forEach(serie => ['backgroundColor', 'borderColor', 'pointBackgroundColor', 'pointBorderColor'].forEach(clave => {
+                    if (serie[clave] === undefined) return;
+                    serie[clave] = Array.isArray(serie[clave]) ? serie[clave].map(cambiarTono) : cambiarTono(serie[clave]);
+                }));
+            },
+        });
+    }
+
+    // Al cerrar una ventana, el foco vuelve al botón que la abrió (o al menú del que salió).
+    document.addEventListener('show.bs.modal', e => { e.target._origenFoco = document.activeElement; });
+    document.addEventListener('hidden.bs.modal', e => {
+        let origen = e.target._origenFoco;
+        if (!origen || (document.activeElement !== document.body && !e.target.contains(document.activeElement))) return;
+        const menu = origen.closest?.('.dropdown-menu');
+        if (menu) origen = menu.parentElement.querySelector('[data-bs-toggle="dropdown"]');
+        if (origen && document.contains(origen) && origen.offsetParent !== null) origen.focus();
+    });
+
+    // Escape cierra el texto completo del anuncio abierto con el teclado o el mouse.
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && window.bootstrap) {
+            document.querySelectorAll('.texto-completo').forEach(el => bootstrap.Tooltip.getInstance(el)?.hide());
+        }
+    });
     if (disenoV2) {
         Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
         if (reducirMovimiento) {
@@ -3038,6 +3126,7 @@ HTML_TEMPLATE = """
             });
             btnElement.classList.remove('btn-outline-secondary');
             btnElement.classList.add('btn-primary', 'active');
+            document.querySelectorAll('#timelineModoFilter button').forEach(b => b.setAttribute('aria-pressed', b === btnElement));
         }
         filterTimeline(timelineDiasActual, null);
     }
@@ -3051,6 +3140,7 @@ HTML_TEMPLATE = """
             });
             btnElement.classList.remove('btn-outline-secondary');
             btnElement.classList.add('btn-primary', 'active');
+            document.querySelectorAll('#timeRangeFilter button').forEach(b => b.setAttribute('aria-pressed', b === btnElement));
         }
 
         const rawTimelineData = timelineModo === 'actual' ? rawTimelineDataActual : rawTimelineDataHistorico;
@@ -3266,7 +3356,7 @@ HTML_TEMPLATE = """
                 chip.className = 'badge bg-primary-subtle text-primary-emphasis d-inline-flex align-items-center gap-1 chip-palabra';
                 chip.textContent = p;
                 const x = document.createElement('button');
-                x.type = 'button'; x.className = 'btn-close'; x.style.fontSize = '.5rem'; x.title = 'Quitar';
+                x.type = 'button'; x.className = 'btn-close'; x.style.fontSize = '.5rem'; x.title = 'Quitar'; x.setAttribute('aria-label', `Quitar "${p}"`);
                 x.addEventListener('click', () => { palabras.splice(i, 1); dibujarChips(); });
                 chip.appendChild(x);
                 caja.insertBefore(chip, entrada);
@@ -3401,8 +3491,11 @@ HTML_TEMPLATE = """
             const input = document.createElement('input');
             input.type = 'text'; input.className = 'form-control'; input.dataset.tipo = tipo; input.value = valor || '';
             input.placeholder = tipo === 'meta' ? 'Pega el enlace de su página en la Biblioteca de Anuncios, o escribe el nombre' : 'Ej.: https://www.empresa.com';
+            input.setAttribute('aria-label', tipo === 'meta' ? 'Página de Meta' : 'Sitio web para Google');
             const quitar = document.createElement('button');
-            quitar.type = 'button'; quitar.className = 'btn btn-outline-secondary'; quitar.title = 'Quitar'; quitar.innerHTML = '<i class="bi bi-x-lg"></i>';
+            quitar.type = 'button'; quitar.className = 'btn btn-outline-secondary'; quitar.title = 'Quitar';
+            quitar.setAttribute('aria-label', tipo === 'meta' ? 'Quitar esta página de Meta' : 'Quitar este sitio web');
+            quitar.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
             const nota = document.createElement('div');
             nota.className = 'form-text';
             input.addEventListener('input', () => pista(input, nota));
@@ -3926,7 +4019,7 @@ HTML_TEMPLATE = """
             document.body.classList.add('aplicando-filtros');
             const estado = document.getElementById('estadoFiltros');
             if (estado) {
-                estado.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Aplicando…';
+                estado.innerHTML = '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Aplicando filtros…';
                 estado.classList.replace('d-none', 'd-flex');
             }
         });
