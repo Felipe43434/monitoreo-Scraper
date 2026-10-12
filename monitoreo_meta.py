@@ -77,6 +77,20 @@ def oficiales_desde_html(html):
             pass
     return destino
 
+def sumar_html(page, oficiales):
+    # Suma los anuncios que vienen dentro del HTML sin pisar los ya recibidos por GraphQL. Si la
+    # página todavía está navegando, page.content() falla: se reintenta una vez.
+    for intento in range(2):
+        try:
+            html = page.content()
+            break
+        except Exception:
+            if intento:
+                return
+            time.sleep(2)
+    for ad_id, oficial in oficiales_desde_html(html).items():
+        oficiales.setdefault(ad_id, oficial)
+
 def texto_oficial(oficial):
     # Los anuncios dinámicos traen una plantilla ({{product.brand}}) en body y el texto real en cards.
     snap = oficial.get('snapshot') or {}
@@ -484,9 +498,6 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
 
     print("📜 Desplazando y cargando creatividades de Meta...")
     if por_pagina:
-        # La primera página (hasta 30 anuncios) viene dentro del HTML: se cuenta antes de decidir si
-        # hace falta seguir cargando, para no recargar empresas que ya están completas.
-        oficiales.update(oficiales_desde_html(page.content()))
         cargar_todos_los_anuncios(page, url_final, oficiales, limitado)
     else:
         prev_ads_count = 0
@@ -652,7 +663,7 @@ def extraer_anuncios(page, nombre_flask, nombre_bot, url_final, bloqueadas, fech
         return resultados;
     }""", nombre_bot)
 
-    oficiales.update(oficiales_desde_html(page.content()))
+    sumar_html(page, oficiales)
 
     # Las variantes agrupadas ("2 ads use this creative") se muestran en una sola tarjeta pero
     # son anuncios activos distintos: se procesan desde los datos oficiales.
@@ -769,7 +780,7 @@ def total_resultados(page):
         return None
     if re.search(r"No ads match|No hay anuncios que coincidan", cuerpo, re.I):
         return 0
-    m = re.search(r"~?\s*([\d.,]+)\s+(?:results?|resultados?)", cuerpo)
+    m = re.search(r"~?\s*(\d[\d.,]*)\s+(?:results?|resultados?)", cuerpo)
     return int(re.sub(r"[.,]", "", m.group(1))) if m else None
 
 
@@ -784,6 +795,9 @@ def cargar_todos_los_anuncios(page, url, oficiales, limitado):
     recibidos se conservan, no se duplican)."""
     esperas = list(ESPERAS_LIMITE_META)
     recargas = RECARGAS_MAXIMAS
+    # La primera página (hasta 30 anuncios) viene dentro del HTML: se cuenta antes de decidir si
+    # hace falta seguir cargando, para no recargar empresas que ya están completas.
+    sumar_html(page, oficiales)
     total = total_resultados(page)
     previo, sin_cambio = len(oficiales), 0
     for _ in range(150):
@@ -802,6 +816,9 @@ def cargar_todos_los_anuncios(page, url, oficiales, limitado):
             espera = esperas.pop(0)
             print(f"  ⏳ Meta limitó las solicitudes ({actual} de ~{total or '?'} cargados); espero {espera} s y sigo...")
             time.sleep(espera)
+            # Ya se está al final de la página: se sube un poco para que el siguiente desplazamiento
+            # vuelva a pedir anuncios.
+            page.evaluate("window.scrollBy(0, -1500)")
             sin_cambio = 0
             continue
         if sin_cambio >= 4:
@@ -811,12 +828,15 @@ def cargar_todos_los_anuncios(page, url, oficiales, limitado):
                 time.sleep(10)
                 page.goto(url, wait_until="domcontentloaded", timeout=90000)
                 time.sleep(3)
-                oficiales.update(oficiales_desde_html(page.content()))
-                sin_cambio = 0
+                sumar_html(page, oficiales)
+                previo, sin_cambio = len(oficiales), 0
                 continue
             break
     if total and len(oficiales) < total * 0.9:
         cargar_por_semanas(page, url, oficiales, total)
+    if total is not None and len(oficiales) >= total:
+        # Con todos los anuncios en mano, los cortes de Meta en el camino ya no dejan la lista incompleta.
+        limitado["rate_limit"] = False
     print(f"  📦 Anuncios recibidos de Meta: {len(oficiales)} de ~{total if total is not None else '?'}"
           + (f" (hubo {limitado['veces']} cortes por límite)" if limitado["veces"] else ""))
 
@@ -828,13 +848,16 @@ def cargar_por_semanas(page, url, oficiales, total):
     solo se ven 30), pero suma lo que encuentre. Al final se vuelve a la búsqueda original para que
     el contador y la verificación de búsqueda completa usen el total real."""
     antes = len(oficiales)
+    partes = urllib.parse.urlparse(url)
+    params = dict(urllib.parse.parse_qsl(partes.query))
     hasta = datetime.now(timezone.utc).date()
     for _ in range(SEMANAS_RESPALDO):
         desde = hasta - timedelta(days=6)
+        params.update({'start_date[min]': str(desde), 'start_date[max]': str(hasta)})
         try:
-            page.goto(f"{url}&start_date[min]={desde}&start_date[max]={hasta}", wait_until="domcontentloaded", timeout=90000)
+            page.goto(partes._replace(query=urllib.parse.urlencode(params)).geturl(), wait_until="domcontentloaded", timeout=90000)
             time.sleep(3.5)
-            oficiales.update(oficiales_desde_html(page.content()))
+            sumar_html(page, oficiales)
         except Exception as e:
             print(f"  ⚠️ No se pudo revisar la semana {desde}..{hasta}: {e}")
         if len(oficiales) >= total:
@@ -854,14 +877,10 @@ def busqueda_completa(page, cargados, rate_limit):
     if rate_limit:
         print("  ⚠️ Meta limitó las solicitudes (rate limit): la lista quedó incompleta, no se marcan retiros.")
         return False
-    cuerpo = page.inner_text("body")
-    if re.search(r"No ads match|No hay anuncios que coincidan", cuerpo, re.I):
-        return True
-    m = re.search(r"~?\s*([\d.,]+)\s+(?:results?|resultados?)", cuerpo)
-    if not m:
+    total = total_resultados(page)
+    if total is None:
         print("  ⚠️ No se encontró el contador de resultados de Meta: no se marcan retiros.")
         return False
-    total = int(re.sub(r"[.,]", "", m.group(1)))
     if cargados < int(total * 0.9):
         print(f"  ⚠️ Se cargaron {cargados} de ~{total} anuncios: lista incompleta, no se marcan retiros.")
         return False
