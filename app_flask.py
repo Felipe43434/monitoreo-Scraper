@@ -3297,7 +3297,7 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
                 <div class="card-custom p-3">
-                    <h6 class="fw-bold mb-2"><i class="bi bi-hourglass-split"></i> Anuncios que siguen funcionando (más longevos activos)</h6>
+                    <h6 class="fw-bold mb-2"><i class="bi bi-hourglass-split"></i> Anuncios que siguen funcionando (más tiempo montados)</h6>
                     <ul class="list-unstyled mb-0 d-flex flex-column gap-2 small">
                         {% for ad in m.longevos %}
                         <li class="d-flex flex-wrap align-items-center gap-2">
