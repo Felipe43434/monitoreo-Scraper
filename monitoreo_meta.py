@@ -280,6 +280,9 @@ def limpiar_texto_copy(texto, empresa):
     limpio = re.sub(r'\s+', ' ', limpio).strip()
     return limpio if len(limpio) > 5 else f"Anuncio de {empresa}"
 
+def hoy_venezuela():
+    return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
+
 def guardar_anuncio(anuncio, bloqueadas):
     empresa_nom = anuncio.get('compania', '').strip()
     if empresa_nom.lower() in bloqueadas:
@@ -313,6 +316,7 @@ def guardar_anuncio(anuncio, bloqueadas):
                     ELSE EXCLUDED.titulo
                 END,
                 presente_en_meta = TRUE,
+                fecha_retiro = NULL,
                 imagen_url = COALESCE(NULLIF(EXCLUDED.imagen_url, ''), anuncios.imagen_url),
                 destino = COALESCE(NULLIF(EXCLUDED.destino, ''), anuncios.destino),
                 destino_url = COALESCE(NULLIF(EXCLUDED.destino_url, ''), anuncios.destino_url),
@@ -333,7 +337,7 @@ def guardar_anuncio(anuncio, bloqueadas):
             anuncio.get('destino'),
             anuncio.get('destino_url'),
             # Último día (hora de Venezuela) en que el bot vio el anuncio publicado.
-            (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d'),
+            hoy_venezuela(),
         ))
         res = cur.fetchone()
         conn.commit()
@@ -366,12 +370,12 @@ def marcar_no_detectados(compania, links_encontrados, fecha_desde=None):
         cur = conn.cursor()
         cur.execute("""
             UPDATE anuncios
-            SET presente_en_meta = FALSE
+            SET presente_en_meta = FALSE, fecha_retiro = COALESCE(NULLIF(fecha_ultima_vista, ''), %s)
             WHERE compania = %s AND COALESCE(fuente, 'Meta') = 'Meta'
               AND link_individual != ALL(%s)
               AND presente_en_meta IS DISTINCT FROM FALSE
               AND (%s IS NULL OR fecha_subida >= %s);
-        """, (compania, links_encontrados, fecha_desde, fecha_desde))
+        """, (hoy_venezuela(), compania, links_encontrados, fecha_desde, fecha_desde))
         conn.commit()
         cur.close()
         conn.close()
@@ -386,11 +390,12 @@ def marcar_retirados_meta(compania, links_vigentes):
         cur = conn.cursor()
         cur.execute("""
             UPDATE anuncios
-            SET presente_en_meta = FALSE, estado = 'Inactivo'
+            SET presente_en_meta = FALSE, estado = 'Inactivo',
+                fecha_retiro = COALESCE(fecha_retiro, NULLIF(fecha_ultima_vista, ''), %s)
             WHERE compania = %s AND COALESCE(fuente, 'Meta') = 'Meta'
               AND link_individual != ALL(%s)
               AND (presente_en_meta IS DISTINCT FROM FALSE OR estado IS DISTINCT FROM 'Inactivo');
-        """, (compania, list(links_vigentes)))
+        """, (hoy_venezuela(), compania, list(links_vigentes)))
         print(f"  🗂️ {compania}: {cur.rowcount} anuncios marcados como retirados de Meta.")
         conn.commit()
         cur.close()

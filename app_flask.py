@@ -325,6 +325,7 @@ def init_config_tables():
                 cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS presente_en_meta BOOLEAN DEFAULT TRUE;")
                 cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fuente VARCHAR(20) DEFAULT 'Meta';")
                 cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fecha_ultima_vista VARCHAR(10);")
+                cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fecha_retiro VARCHAR(10);")
                 # Palabras que cada usuario del panel quitó de "Términos Frecuentes".
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS palabras_excluidas (
@@ -635,6 +636,178 @@ def registros_participacion(anuncios):
                           't': str(a.get('texto') or a.get('titulo') or '')[:90]})
     return {'registros': registros, 'sin_fin': dict(sin_fin)}
 
+def a_fecha(texto):
+    try:
+        return datetime.strptime(str(texto)[:10], '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return None
+
+def reparto_participacion(registros, desde, hasta):
+    # Mismo cálculo que la tarjeta "Participación Publicitaria": días activos de cada campaña dentro de
+    # [desde, hasta], ponderados; las variantes de una campaña cuentan una vez. Devuelve % por empresa.
+    grupos = {}
+    for r in registros:
+        ini = max(a_fecha(r['i']), desde)
+        fin = min(a_fecha(r['f']) or hasta, hasta) if r['f'] else hasta
+        dias = (fin - ini).days + 1
+        if dias > 0:
+            grupos[r['g']] = (r['c'], max(grupos.get(r['g'], (None, 0))[1], dias * r['p']))
+    por_compania = Counter()
+    for compania, valor in grupos.values():
+        por_compania[compania] += valor
+    total = sum(por_compania.values())
+    return {c: round(v * 100 / total, 1) for c, v in por_compania.items()} if total else {}
+
+EMPRESA_PROPIA = 'Gálac'
+
+def categoria_formato(ad):
+    formato = str(ad.get('formato') or '').lower()
+    if 'video' in formato or (ad.get('duracion_segundos') or 0) > 0:
+        return 'Video'
+    if 'carrusel' in formato:
+        return 'Carrusel'
+    if 'texto' in formato:
+        return 'Texto'
+    return 'Imagen'
+
+def resumen_semanal(anuncios, registros, palabras_ignoradas):
+    # Pestaña "Resumen Semanal" (Beta): últimos 7 días frente a los 7 anteriores. Mercadeo ve campañas, formatos,
+    # mensajes y participación; Product Owner ve productos, oportunidades frente a Gálac y productos nuevos.
+    hoy = hoy_venezuela()
+    inicio_semana, inicio_anterior = hoy - timedelta(days=6), hoy - timedelta(days=13)
+    inicio = lambda a: a_fecha(parse_date_str(a.get('fecha_display')))
+    nuevos = [a for a in anuncios if (d := inicio(a)) and inicio_semana <= d <= hoy]
+    anteriores = [a for a in anuncios if (d := inicio(a)) and inicio_anterior <= d < inicio_semana]
+    retirados = [a for a in anuncios if not a.get('presente_en_meta') and (f := a_fecha(fecha_fin_anuncio(a) or ''))
+                 and inicio_semana <= f <= hoy]
+    pct = lambda n, t: round(n * 100 / t) if t else 0
+
+    campanas = Counter(a['compania'] for a in {a['campana']: a for a in nuevos}.values() if a.get('compania'))
+    campanas_antes = Counter(a['compania'] for a in {a['campana']: a for a in anteriores}.values() if a.get('compania'))
+    kpis = {
+        'campanas': sum(campanas.values()), 'campanas_antes': sum(campanas_antes.values()),
+        'anuncios': len(nuevos), 'anuncios_antes': len(anteriores), 'retirados': len(retirados),
+        'empresas': len(campanas), 'empresas_antes': len(campanas_antes),
+    }
+
+    # ---------- Mercadeo ----------
+    por_empresa = []
+    for compania, n in campanas.most_common():
+        propios = [a for a in nuevos if a.get('compania') == compania]
+        ejemplo = next((a for a in propios if a.get('tiene_miniatura') or a.get('imagen_url')), propios[0])
+        plataformas = Counter(p.strip() for a in propios for p in str(a.get('plataformas') or '').split(',') if p.strip())
+        por_empresa.append({
+            'compania': compania, 'campanas': n, 'antes': campanas_antes.get(compania, 0), 'anuncios': len(propios),
+            'formatos': ' · '.join(f"{f} {c}" for f, c in Counter(map(categoria_formato, propios)).most_common()),
+            'plataformas': ', '.join(p for p, _ in plataformas.most_common(3)),
+            'ejemplo': {'id': ejemplo.get('id'), 'imagen': bool(ejemplo.get('tiene_miniatura') or ejemplo.get('imagen_url')),
+                        'texto': str(ejemplo.get('texto') or ejemplo.get('titulo') or '')[:120], 'enlace': ejemplo.get('link_individual') or ''},
+        })
+
+    def palabras(lista):
+        conteo = Counter()
+        for a in lista:
+            if a.get('fuente') == 'Google' and str(a.get('titulo') or '').startswith('Anuncio de '):
+                continue
+            texto = f"{a.get('texto') or ''} {a.get('titulo') or ''}".lower()
+            conteo.update(p for p in re.findall(r'[a-záéíóúñ]{4,}', texto) if p not in STOPWORDS_ES and p not in palabras_ignoradas)
+        return conteo
+    palabras_semana, palabras_antes = palabras(nuevos), palabras(anteriores)
+    terminos = [{'palabra': p, 'veces': n, 'cambio': n - palabras_antes.get(p, 0)} for p, n in palabras_semana.most_common(10)]
+
+    reparto = reparto_participacion(registros, inicio_semana, hoy)
+    reparto_antes = reparto_participacion(registros, inicio_anterior, inicio_semana - timedelta(days=1))
+    participacion = sorted(({'compania': c, 'pct': reparto.get(c, 0), 'antes': reparto_antes.get(c, 0),
+                             'cambio': round(reparto.get(c, 0) - reparto_antes.get(c, 0), 1)}
+                            for c in set(reparto) | set(reparto_antes)), key=lambda x: -x['pct'])[:8]
+
+    formatos = Counter(map(categoria_formato, nuevos))
+    destinos = Counter(a.get('destino') for a in nuevos if a.get('destino'))
+    longevos = sorted((a for a in anuncios if a.get('es_winning')), key=lambda a: -(a.get('dias_activo') or 0))[:5]
+
+    destacados_mercadeo = []
+    if campanas:
+        n = campanas.most_common(1)[0][1]
+        lideres = sorted(c for c, v in campanas.items() if v == n)
+        plural = f"{n} campaña{'s' if n != 1 else ''} nueva{'s' if n != 1 else ''}"
+        if len(lideres) == 1:
+            cambio = n - campanas_antes.get(lideres[0], 0)
+            destacados_mercadeo.append(f"{lideres[0]} fue la empresa más activa: {plural} ({'+' if cambio > 0 else ''}{cambio} frente a la semana anterior).")
+        elif len(lideres) <= 3:
+            destacados_mercadeo.append(f"Las empresas más activas fueron {', '.join(lideres[:-1])} y {lideres[-1]}, con {plural} cada una.")
+        destacados_mercadeo.append(f"En total hubo {kpis['campanas']} campañas nuevas de {kpis['empresas']} empresas"
+                                   f" (la semana anterior: {kpis['campanas_antes']} de {kpis['empresas_antes']}).")
+    else:
+        destacados_mercadeo.append("Ninguna empresa lanzó campañas nuevas en los últimos 7 días.")
+    previas = {a.get('compania') for a in anuncios if (d := inicio(a)) and d < inicio_semana and d >= hoy - timedelta(days=60)}
+    for compania in campanas:
+        if compania not in previas:
+            destacados_mercadeo.append(f"{compania} volvió a anunciar después de al menos 2 meses sin campañas nuevas.")
+    if formatos:
+        f, n = formatos.most_common(1)[0]
+        destacados_mercadeo.append(f"El formato más usado en lo nuevo fue {f.lower()} ({pct(n, len(nuevos))} %).")
+    if destinos:
+        d, n = destinos.most_common(1)[0]
+        destacados_mercadeo.append(f"La mayoría de los anuncios nuevos lleva a {d} ({pct(n, sum(destinos.values()))} %).")
+    subidas = [p for p in participacion if p['cambio'] >= 3]
+    if subidas:
+        p = max(subidas, key=lambda x: x['cambio'])
+        coma = lambda x: f"{x:.1f}".replace('.', ',')
+        destacados_mercadeo.append(f"{p['compania']} ganó {coma(p['cambio'])} puntos de participación ({coma(p['antes'])} % → {coma(p['pct'])} %).")
+    if retirados:
+        por_compania = Counter(a.get('compania') for a in retirados).most_common()
+        c, n = por_compania[0]
+        if n > 1 and (len(por_compania) == 1 or n > por_compania[1][1]):
+            destacados_mercadeo.append(f"Se retiraron {len(retirados)} anuncios, sobre todo de {c} ({n}).")
+        else:
+            destacados_mercadeo.append(f"Se retiraron {len(retirados)} anuncio{'s' if len(retirados) != 1 else ''} de {len(por_compania)} empresa{'s' if len(por_compania) != 1 else ''}.")
+    if terminos:
+        en_alza = [t['palabra'] for t in terminos if t['cambio'] > 0][:3]
+        if en_alza:
+            destacados_mercadeo.append("Palabras en alza: " + ', '.join(f"«{p}»" for p in en_alza) + ".")
+
+    # ---------- Product Owner ----------
+    productos_nuevos = Counter(p for a in nuevos for p in (a.get('productos') or []))
+    columnas = [p for p, _ in productos_nuevos.most_common(8)]
+    matriz = [{'compania': c, 'valores': [sum(1 for a in nuevos if a.get('compania') == c and p in (a.get('productos') or [])) for p in columnas]}
+              for c, _ in campanas.most_common()]
+    activos = [a for a in anuncios if a.get('presente_en_meta')]
+    con_producto = {}
+    for a in activos:
+        for p in a.get('productos') or []:
+            con_producto.setdefault(p, set()).add(a.get('compania'))
+    huecos = sorted(({'producto': p, 'competidores': sorted(c for c in empresas if c != EMPRESA_PROPIA)}
+                     for p, empresas in con_producto.items() if EMPRESA_PROPIA not in empresas and empresas - {EMPRESA_PROPIA}),
+                    key=lambda h: -len(h['competidores']))
+    nuevos_productos = []
+    for compania in campanas:
+        antes = {p for a in anuncios if a.get('compania') == compania and (d := inicio(a)) and d < inicio_semana for p in (a.get('productos') or [])}
+        for p in sorted({p for a in nuevos if a.get('compania') == compania for p in (a.get('productos') or [])} - antes):
+            nuevos_productos.append({'compania': compania, 'producto': p})
+    propios = sorted({p for a in activos if a.get('compania') == EMPRESA_PROPIA for p in (a.get('productos') or [])})
+
+    destacados_producto = []
+    if productos_nuevos:
+        p, n = productos_nuevos.most_common(1)[0]
+        destacados_producto.append(f"El producto más anunciado esta semana fue {p} ({n} anuncio{'s' if n != 1 else ''} nuevo{'s' if n != 1 else ''}).")
+    else:
+        destacados_producto.append("No hubo anuncios nuevos con productos reconocidos en los últimos 7 días.")
+    for item in nuevos_productos[:4]:
+        destacados_producto.append(f"{item['compania']} empezó a anunciar {item['producto']}.")
+    for h in huecos[:3]:
+        n = len(h['competidores'])
+        destacados_producto.append(f"{n} competidor{'es' if n != 1 else ''} anuncia{'n' if n != 1 else ''} {h['producto']} y {EMPRESA_PROPIA} no tiene anuncios activos de ese producto.")
+    if propios:
+        destacados_producto.append(f"{EMPRESA_PROPIA} tiene anuncios activos de: {', '.join(propios)}.")
+
+    return {
+        'desde': inicio_semana.strftime('%d/%m'), 'hasta': hoy.strftime('%d/%m/%Y'), 'kpis': kpis,
+        'mercadeo': {'destacados': destacados_mercadeo, 'por_empresa': por_empresa, 'terminos': terminos,
+                     'participacion': participacion, 'longevos': longevos},
+        'producto': {'destacados': destacados_producto, 'columnas': columnas, 'matriz': matriz, 'huecos': huecos,
+                     'nuevos_productos': nuevos_productos, 'propios': propios},
+    }
+
 def estadisticas_por_empresa(anuncios):
     # Tabla "Empresas Monitoreadas": se cuenta sobre los anuncios ya filtrados para que
     # responda a los mismos filtros que el resto del panel.
@@ -921,6 +1094,19 @@ def fecha_ultima_vista(ad):
         m = re.search(r'visto por última vez (\d{4}-\d{2}-\d{2})', str(ad.get('titulo') or ''))
         valor = m.group(1) if m else None
     return str(valor).strip()[:10] if valor else None
+
+def fecha_fin_anuncio(ad):
+    # Último día en que el anuncio estuvo activo (Beta). Google informa su última vista; en Meta, uno que sigue
+    # publicado está activo hoy (None) y uno retirado terminó el día de su retiro o de su última vista.
+    if (ad.get('fuente') or 'Meta') == 'Google':
+        return fecha_ultima_vista(ad)
+    if ad.get('presente_en_meta'):
+        return None
+    for clave in ('fecha_retiro', 'fecha_ultima_vista'):
+        valor = str(ad.get(clave) or '').strip()[:10]
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', valor):
+            return valor
+    return None
 
 def calcular_dias_activo(fecha_val, hasta=None):
     # "hasta" es la última vez que se vio el anuncio: uno que ya no circula deja de sumar días.
@@ -2172,7 +2358,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    {% set pestanas_validas = ['tab-charts', 'tab-ads', 'tab-winning', 'tab-retirados', 'tab-new', 'tab-keywords'] %}
+    {% set pestanas_validas = ['tab-charts', 'tab-ads', 'tab-winning', 'tab-retirados', 'tab-new', 'tab-keywords', 'tab-resumen'] %}
     {% set pestana_activa = request.args.get('pestana') if request.args.get('pestana') in pestanas_validas else 'tab-charts' %}
     {# Miniatura del anuncio: clic = imagen completa en una ventana; se usa en todas las tablas de anuncios. #}
     {% macro celda_miniatura(ad) %}
@@ -2412,6 +2598,13 @@ HTML_TEMPLATE = """
                 <i class="bi bi-chat-square-quote"></i> Términos Frecuentes
             </button>
         </li>
+        {% if es_beta and resumen %}
+        <li class="nav-item">
+            <button class="nav-link {% if pestana_activa == 'tab-resumen' %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-resumen" type="button">
+                <i class="bi bi-journal-text"></i> Resumen Semanal <span class="badge bg-warning text-dark ms-1">BETA</span>
+            </button>
+        </li>
+        {% endif %}
     </ul>
         <button class="btn btn-sm btn-outline-info d-flex align-items-center gap-1 ms-auto mb-1" data-bs-toggle="modal" data-bs-target="#modalComparar" title="Comparar dos o más compañías">
             <i class="bi bi-layout-split" aria-hidden="true"></i> Comparar {{ nuevo('comparar') }}
@@ -2432,10 +2625,10 @@ HTML_TEMPLATE = """
                                     <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="setTimelineModo('actual', this)" title="Anuncios que siguen activos en Meta o Google">Vigentes</button>
                                 </div>
                                 <div class="btn-group btn-group-sm" role="group" id="timeRangeFilter" aria-label="Período del gráfico">
-                                    <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="filterTimeline(7, this)">7D</button>
+                                    <button type="button" class="btn btn-primary active" aria-pressed="true" onclick="filterTimeline(7, this)">7D</button>
                                     <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="filterTimeline(30, this)">30D</button>
                                     <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="filterTimeline(365, this)">1A</button>
-                                    <button type="button" class="btn btn-primary active" aria-pressed="true" onclick="filterTimeline(0, this)">Todo</button>
+                                    <button type="button" class="btn btn-outline-secondary" aria-pressed="false" onclick="filterTimeline(0, this)">Todo</button>
                                 </div>
                             </div>
                         </div>
@@ -2478,14 +2671,28 @@ HTML_TEMPLATE = """
             <div class="row g-3 mb-4">
                 <div class="col-lg-7">
                     <div class="card-custom p-3 h-100">
-                        <div class="d-flex justify-content-between align-items-center mb-1">
-                            <h6 class="fw-bold m-0"><i class="bi bi-activity"></i> Anuncios Activos en el Tiempo {{ nuevo('historial_activos') }}</h6>
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-1">
+                            <h6 class="fw-bold m-0"><i class="bi bi-activity"></i> {% if es_beta %}Evolución en el Tiempo{% else %}Anuncios Activos en el Tiempo {{ nuevo('historial_activos') }}{% endif %}</h6>
+                            {% if es_beta %}
+                            <select id="evolucionVista" class="form-select form-select-sm w-auto" aria-label="Gráfico a mostrar">
+                                <option value="activos">Anuncios activos</option>
+                                <option value="participacion">Participación semanal</option>
+                            </select>
+                            {% endif %}
                         </div>
-                        <p class="small text-muted mb-2">Cuántos anuncios tenía activos cada empresa en cada corrida de los bots (últimos 90 días).</p>
-                        {% if historial_data.fechas|length >= 2 %}
-                        <div style="height: 300px;"><canvas id="historialChart"></canvas></div>
-                        {% else %}
-                        <div class="text-center text-muted py-5 small"><i class="bi bi-hourglass-split fs-3 d-block mb-2"></i>El gráfico se irá llenando con cada corrida de los bots{% if historial_data.fechas %} (hay datos de {{ historial_data.fechas[0] }}){% endif %}.</div>
+                        <div data-vista="activos">
+                            <p class="small text-muted mb-2">Cuántos anuncios tenía activos cada empresa en cada corrida de los bots (últimos 90 días).</p>
+                            {% if historial_data.fechas|length >= 2 %}
+                            <div style="height: 300px;"><canvas id="historialChart"></canvas></div>
+                            {% else %}
+                            <div class="text-center text-muted py-5 small"><i class="bi bi-hourglass-split fs-3 d-block mb-2"></i>El gráfico se irá llenando con cada corrida de los bots{% if historial_data.fechas %} (hay datos de {{ historial_data.fechas[0] }}){% endif %}.</div>
+                            {% endif %}
+                        </div>
+                        {% if es_beta %}
+                        <div data-vista="participacion" hidden>
+                            <p class="small text-muted mb-2">Participación publicitaria semana a semana (últimas 12 semanas) de las 6 empresas con más presencia.</p>
+                            <div style="height: 300px; position: relative;"><canvas id="participacionSemanal"></canvas></div>
+                        </div>
                         {% endif %}
                     </div>
                 </div>
@@ -2832,7 +3039,8 @@ HTML_TEMPLATE = """
 {{ texto_anuncio(ad, 140) }}
                                 </td>
                                 <td>
-                                    <span class="badge bg-secondary-subtle text-secondary fw-semibold">{{ ad.dias_activo }} días aprox.</span>
+                                    <span class="badge bg-secondary-subtle text-secondary fw-semibold">{{ ad.dias_activo }} días{% if not ad.fecha_retiro_display %} aprox.{% endif %}</span>
+                                    {% if ad.fecha_retiro_display %}<div class="small text-muted mt-1">Retirado el {{ ad.fecha_retiro_display }}</div>{% endif %}
                                 </td>
                                 <td class="small fw-semibold">{{ ad.fecha_display }}</td>
                                 <td>
@@ -2992,6 +3200,171 @@ HTML_TEMPLATE = """
                 </div>
             </div>
         </div>
+
+        {% if es_beta and resumen %}
+        <!-- Panel 7: Resumen semanal (Beta). Mercadeo y Product Owner ven enfoques distintos. -->
+        {% set k = resumen.kpis %}
+        <div class="tab-pane fade{% if pestana_activa == 'tab-resumen' %} show active{% endif %}" id="tab-resumen">
+            <div class="card-custom p-3 mb-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+                <div>
+                    <h6 class="fw-bold mb-1"><i class="bi bi-journal-text"></i> Resumen Semanal <span class="badge bg-warning text-dark">BETA</span></h6>
+                    <p class="small text-muted mb-0">Del {{ resumen.desde }} al {{ resumen.hasta }}, comparado con los 7 días anteriores. Usa los filtros del panel.</p>
+                </div>
+                {% if elige_rol_resumen %}
+                <div class="btn-group btn-group-sm" role="group" aria-label="Enfoque del resumen" id="resumenRol">
+                    <button type="button" class="btn {{ 'btn-primary active' if rol_resumen == 'mercadeo' else 'btn-outline-secondary' }}" data-rol="mercadeo" aria-pressed="{{ 'true' if rol_resumen == 'mercadeo' else 'false' }}"><i class="bi bi-megaphone"></i> Mercadeo</button>
+                    <button type="button" class="btn {{ 'btn-primary active' if rol_resumen == 'producto' else 'btn-outline-secondary' }}" data-rol="producto" aria-pressed="{{ 'true' if rol_resumen == 'producto' else 'false' }}"><i class="bi bi-box-seam"></i> Product Owner</button>
+                </div>
+                {% else %}
+                <span class="badge bg-primary-subtle text-primary-emphasis">Enfoque: {{ 'Product Owner' if rol_resumen == 'producto' else 'Mercadeo' }}</span>
+                {% endif %}
+            </div>
+
+            <div class="row g-3 mb-3">
+                {% for titulo, valor, antes, icono in [('Campañas nuevas', k.campanas, k.campanas_antes, 'bi-megaphone'), ('Anuncios nuevos', k.anuncios, k.anuncios_antes, 'bi-collection-play'), ('Empresas con novedades', k.empresas, k.empresas_antes, 'bi-buildings'), ('Retirados en la semana', k.retirados, None, 'bi-eye-slash')] %}
+                <div class="col-6 col-xl-3">
+                    <div class="card-custom p-3 h-100">
+                        <span class="stat-label"><i class="bi {{ icono }}"></i> {{ titulo }}</span>
+                        <div class="stat-value">{{ valor }}</div>
+                        {% if antes is not none %}
+                        <div class="small text-muted">{% if valor > antes %}<i class="bi bi-arrow-up-right"></i> +{{ valor - antes }}{% elif valor < antes %}<i class="bi bi-arrow-down-right"></i> {{ valor - antes }}{% else %}<i class="bi bi-dash"></i> igual{% endif %} frente a la semana anterior ({{ antes }})</div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+
+            {% set m = resumen.mercadeo %}
+            <div class="resumen-rol" data-rol="mercadeo"{% if rol_resumen != 'mercadeo' %} hidden{% endif %}>
+                <div class="card-custom p-3 mb-3">
+                    <h6 class="fw-bold mb-2"><i class="bi bi-lightbulb"></i> Lo más importante</h6>
+                    <ul class="mb-0 ps-3">{% for linea in m.destacados %}<li>{{ linea }}</li>{% endfor %}</ul>
+                </div>
+                <div class="row g-3 mb-3">
+                    <div class="col-xl-7">
+                        <div class="card-custom p-3 h-100">
+                            <h6 class="fw-bold mb-2"><i class="bi bi-megaphone"></i> Campañas nuevas por empresa</h6>
+                            <div class="table-responsive">
+                                <table class="table table-sm align-middle mb-0">
+                                    <thead class="table-light"><tr class="small text-muted"><th>Empresa</th><th class="text-center">Campañas</th><th class="text-center">Anuncios</th><th>Formatos y plataformas</th><th>Ejemplo</th></tr></thead>
+                                    <tbody>
+                                        {% for e in m.por_empresa %}
+                                        <tr>
+                                            <td class="fw-bold">{{ e.compania }}</td>
+                                            <td class="text-center">{{ e.campanas }}<div class="small text-muted">antes {{ e.antes }}</div></td>
+                                            <td class="text-center">{{ e.anuncios }}</td>
+                                            <td class="small">{{ e.formatos }}<div class="text-muted">{{ e.plataformas }}</div></td>
+                                            <td class="small" style="max-width: 260px;">
+                                                <div class="d-flex align-items-center gap-2">
+                                                    {% if e.ejemplo.imagen and e.ejemplo.id %}<img src="/miniatura/{{ e.ejemplo.id }}" alt="" width="40" height="40" class="rounded flex-shrink-0" style="object-fit: cover;" loading="lazy" onerror="this.remove()">{% endif %}
+                                                    <a href="{{ e.ejemplo.enlace }}" target="_blank" rel="noopener" class="text-decoration-none text-truncate-2">{{ e.ejemplo.texto or 'Ver anuncio' }}</a>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        {% else %}
+                                        <tr><td colspan="5" class="text-center text-muted py-3">No hubo campañas nuevas en los últimos 7 días.</td></tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-xl-5 d-flex flex-column gap-3">
+                        <div class="card-custom p-3">
+                            <h6 class="fw-bold mb-2"><i class="bi bi-pie-chart-fill"></i> Participación de la semana</h6>
+                            <table class="table table-sm align-middle mb-0">
+                                <thead class="table-light"><tr class="small text-muted"><th>Empresa</th><th class="text-end">Esta semana</th><th class="text-end">Anterior</th><th class="text-end">Cambio</th></tr></thead>
+                                <tbody>
+                                    {% for p in m.participacion %}
+                                    <tr><td class="fw-semibold">{{ p.compania }}</td><td class="text-end">{{ '%.1f'|format(p.pct)|replace('.', ',') }} %</td><td class="text-end text-muted">{{ '%.1f'|format(p.antes)|replace('.', ',') }} %</td>
+                                        <td class="text-end">{% if p.cambio > 0 %}<i class="bi bi-arrow-up-right"></i> +{{ '%.1f'|format(p.cambio)|replace('.', ',') }}{% elif p.cambio < 0 %}<i class="bi bi-arrow-down-right"></i> {{ '%.1f'|format(p.cambio)|replace('.', ',') }}{% else %}—{% endif %}</td></tr>
+                                    {% else %}
+                                    <tr><td colspan="4" class="text-center text-muted py-3">Sin datos de participación todavía.</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="card-custom p-3">
+                            <h6 class="fw-bold mb-2"><i class="bi bi-chat-square-quote"></i> Mensajes de la semana</h6>
+                            <div class="d-flex flex-wrap gap-1">
+                                {% for t in m.terminos %}
+                                <a class="badge bg-primary-subtle text-primary-emphasis text-decoration-none fw-semibold" href="{{ url_con_filtros(q=t.palabra, pestana='tab-ads') }}" title="{{ t.veces }} veces esta semana ({{ '+' if t.cambio > 0 }}{{ t.cambio }} frente a la anterior)">{{ t.palabra }} · {{ t.veces }}{% if t.cambio > 0 %} <i class="bi bi-arrow-up-short"></i>{% endif %}</a>
+                                {% else %}
+                                <span class="small text-muted">No hay textos nuevos para analizar.</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-custom p-3">
+                    <h6 class="fw-bold mb-2"><i class="bi bi-hourglass-split"></i> Anuncios que siguen funcionando (más longevos activos)</h6>
+                    <ul class="list-unstyled mb-0 d-flex flex-column gap-2 small">
+                        {% for ad in m.longevos %}
+                        <li class="d-flex flex-wrap align-items-center gap-2">
+                            <span class="badge badge-winning">{{ ad.dias_activo }} días</span>
+                            <span class="fw-semibold">{{ ad.compania }}</span>
+                            <span class="text-muted text-truncate" style="max-width: 640px;">{{ (ad.texto or ad.titulo or '')[:140] }}</span>
+                            {% if ad.link_individual %}<a href="{{ ad.link_individual }}" target="_blank" rel="noopener" class="text-decoration-none">Ver anuncio</a>{% endif %}
+                        </li>
+                        {% else %}
+                        <li class="text-muted">No hay anuncios activos con más de 45 días.</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+
+            {% set pr = resumen.producto %}
+            <div class="resumen-rol" data-rol="producto"{% if rol_resumen != 'producto' %} hidden{% endif %}>
+                <div class="card-custom p-3 mb-3">
+                    <h6 class="fw-bold mb-2"><i class="bi bi-lightbulb"></i> Lo más importante</h6>
+                    <ul class="mb-0 ps-3">{% for linea in pr.destacados %}<li>{{ linea }}</li>{% endfor %}</ul>
+                </div>
+                <div class="card-custom p-3 mb-3">
+                    <h6 class="fw-bold mb-2"><i class="bi bi-box-seam"></i> Productos en los anuncios nuevos</h6>
+                    {% if pr.columnas %}
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0 text-center">
+                            <thead class="table-light"><tr class="small text-muted"><th class="text-start">Empresa</th>{% for p in pr.columnas %}<th>{{ p }}</th>{% endfor %}</tr></thead>
+                            <tbody>
+                                {% for fila in pr.matriz %}
+                                <tr><td class="text-start fw-semibold">{{ fila.compania }}</td>{% for v in fila.valores %}<td>{% if v %}<span class="badge bg-primary-subtle text-primary-emphasis">{{ v }}</span>{% else %}<span class="text-muted">·</span>{% endif %}</td>{% endfor %}</tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                    <p class="small text-muted mb-0">No hubo anuncios nuevos con productos reconocidos en los últimos 7 días.</p>
+                    {% endif %}
+                </div>
+                <div class="row g-3">
+                    <div class="col-lg-6">
+                        <div class="card-custom p-3 h-100">
+                            <h6 class="fw-bold mb-2"><i class="bi bi-bullseye"></i> Oportunidades: la competencia anuncia y {{ 'Gálac' }} no</h6>
+                            <ul class="list-unstyled mb-0 d-flex flex-column gap-2 small">
+                                {% for h in pr.huecos %}
+                                <li><a class="fw-semibold text-decoration-none" href="{{ url_con_filtros(producto=h.producto, pestana='tab-ads') }}">{{ h.producto }}</a> <span class="text-muted">— {{ h.competidores|join(', ') }}</span></li>
+                                {% else %}
+                                <li class="text-muted">Gálac tiene anuncios activos de todos los productos que anuncia la competencia.</li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="col-lg-6">
+                        <div class="card-custom p-3 h-100">
+                            <h6 class="fw-bold mb-2"><i class="bi bi-stars"></i> Productos nuevos en la comunicación de la competencia</h6>
+                            <ul class="list-unstyled mb-0 d-flex flex-column gap-2 small">
+                                {% for item in pr.nuevos_productos %}
+                                <li><span class="fw-semibold">{{ item.compania }}</span> empezó a anunciar <a class="text-decoration-none" href="{{ url_con_filtros(compania=item.compania, producto=item.producto, pestana='tab-ads') }}">{{ item.producto }}</a></li>
+                                {% else %}
+                                <li class="text-muted">Ningún competidor empezó a anunciar un producto nuevo esta semana.</li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
 
     </div>
 </main>
@@ -3258,7 +3631,7 @@ HTML_TEMPLATE = """
 
     let timelineChartInstance = null;
     let timelineModo = 'historico';
-    let timelineDiasActual = 0;
+    let timelineDiasActual = 7;  // El gráfico arranca en los últimos 7 días
 
     function renderTimeline(labels, datasets) {
         if (!document.getElementById('timelineChart')) return;
@@ -3367,7 +3740,7 @@ HTML_TEMPLATE = """
         renderTimeline(filteredLabels, filteredDatasets);
     }
 
-    filterTimeline(0, null);
+    filterTimeline(timelineDiasActual, null);
 
     if (document.getElementById('formatChart')) {
         const totalFmt = formatData.videos + formatData.imagenes + formatData.textos + formatData.otros;
@@ -3532,6 +3905,24 @@ HTML_TEMPLATE = """
                 boton.addEventListener('click', ordenar);
             });
         });
+    })();
+
+    // Resumen semanal (Beta): el Administrador y Funciones Beta pueden alternar entre Mercadeo y Product Owner.
+    (function enfoqueResumen() {
+        const grupo = document.getElementById('resumenRol');
+        if (!grupo) return;
+        const mostrar = rol => {
+            document.querySelectorAll('.resumen-rol').forEach(s => { s.hidden = s.dataset.rol !== rol; });
+            grupo.querySelectorAll('button').forEach(b => {
+                const activo = b.dataset.rol === rol;
+                b.classList.toggle('btn-primary', activo); b.classList.toggle('active', activo);
+                b.classList.toggle('btn-outline-secondary', !activo);
+                b.setAttribute('aria-pressed', activo);
+            });
+            try { localStorage.setItem('resumenRol', rol); } catch (e) {}
+        };
+        try { const guardado = localStorage.getItem('resumenRol'); if (guardado) mostrar(guardado); } catch (e) {}
+        grupo.addEventListener('click', e => { const b = e.target.closest('[data-rol]'); if (b) mostrar(b.dataset.rol); });
     })();
 
     // Palabras excluidas de "Términos Frecuentes": cada usuario tiene su lista. Desde la tabla se recarga el
@@ -3853,14 +4244,15 @@ HTML_TEMPLATE = """
         try { dias = parseInt(localStorage.getItem('participacionDias'), 10) || 30; } catch (e) {}
         const DIA = 86400000;
         const fecha = t => { const [y, m, d] = t.split('-').map(Number); return Date.UTC(y, m - 1, d); };
-        function calcular() {
-            const ahora = new Date();
-            const hoy = Date.UTC(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
-            const desde = hoy - (dias - 1) * DIA;
+        const ahora = new Date();
+        const hoy = Date.UTC(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+        // Ventana de "diasVentana" días que termina en "hasta" (por defecto, el período elegido hasta hoy).
+        function calcular(diasVentana = dias, hasta = hoy) {
+            const desde = hasta - (diasVentana - 1) * DIA;
             const grupos = {};
             base.registros.forEach(r => {
                 const ini = Math.max(fecha(r.i), desde);
-                const fin = Math.min(r.f ? fecha(r.f) : hoy, hoy);
+                const fin = Math.min(r.f ? fecha(r.f) : hasta, hasta);
                 const activos = fin >= ini ? Math.round((fin - ini) / DIA) + 1 : 0;
                 if (!activos) return;
                 const g = grupos[r.g] || (grupos[r.g] = { id: r.g, c: r.c, inicio: r.i, texto: r.t, valor: 0, anuncios: 0 });
@@ -3879,8 +4271,23 @@ HTML_TEMPLATE = """
             Object.values(porCompania).forEach(e => { e.pct = total ? Math.round(e.diasAnuncio * 1000 / total) / 10 : 0; });
             return { porCompania, dias };
         }
+        // Participación de cada una de las últimas "semanas" semanas (para el gráfico de evolución).
+        function porSemanas(semanas = 12) {
+            const etiquetas = [], valores = {};
+            for (let k = semanas - 1; k >= 0; k--) {
+                const hasta = hoy - k * 7 * DIA;
+                const { porCompania } = calcular(7, hasta);
+                const fin = new Date(hasta);
+                etiquetas.push(`${String(fin.getUTCDate()).padStart(2, '0')}/${String(fin.getUTCMonth() + 1).padStart(2, '0')}`);
+                Object.values(porCompania).forEach(e => { (valores[e.compania] = valores[e.compania] || {})[etiquetas.length - 1] = e.pct; });
+            }
+            const series = Object.entries(valores).map(([compania, v]) => ({ compania, datos: etiquetas.map((_, i) => v[i] ?? 0) }));
+            series.sort((a, b) => b.datos.reduce((s, x) => s + x, 0) - a.datos.reduce((s, x) => s + x, 0));
+            return { etiquetas, series: series.slice(0, 6) };
+        }
         return {
             calcular,
+            porSemanas,
             get dias() { return dias; },
             vacio: { campanas: 0, anuncios: 0, diasAnuncio: 0, pct: 0 },
             cambiarDias(valor) {
@@ -3954,6 +4361,46 @@ HTML_TEMPLATE = """
         selector.addEventListener('change', () => participacion.cambiarDias(parseInt(selector.value, 10) || 30));
         document.addEventListener('participacion-cambio', dibujar);
         dibujar();
+
+    })();
+
+    // Evolución en el tiempo (Beta): la tarjeta de "Anuncios activos" también muestra la participación semanal,
+    // que se elige con un selector; el gráfico se crea al mostrarlo por primera vez (oculto mediría 0 px).
+    (function evolucionEnElTiempo() {
+        const selector = document.getElementById('evolucionVista');
+        if (!selector) return;
+        let grafico = null;
+        function dibujarParticipacion() {
+            if (grafico) return;
+            const { etiquetas, series } = participacion.porSemanas(12);
+            grafico = new Chart(document.getElementById('participacionSemanal'), {
+                type: 'line',
+                data: {
+                    labels: etiquetas,
+                    datasets: series.map((s, i) => ({
+                        label: s.compania, data: s.datos, tension: .25, borderWidth: 2, pointRadius: 3,
+                        borderColor: paletaEmpresas[i % paletaEmpresas.length], backgroundColor: paletaEmpresas[i % paletaEmpresas.length],
+                    })),
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+                    scales: { y: { beginAtZero: true, ticks: { callback: v => v + ' %' } } },
+                    plugins: {
+                        legend: { position: 'bottom', labels: { boxWidth: 10, padding: 8 } },
+                        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y.toLocaleString('es-VE')} %` } },
+                    },
+                },
+            });
+        }
+        function mostrar(vista) {
+            selector.value = vista;
+            document.querySelectorAll('[data-vista]').forEach(v => { v.hidden = v.dataset.vista !== vista; });
+            if (vista === 'participacion') dibujarParticipacion();
+            try { localStorage.setItem('evolucionVista', vista); } catch (e) {}
+        }
+        try { const guardada = localStorage.getItem('evolucionVista'); if (guardada) mostrar(guardada); } catch (e) {}
+        selector.addEventListener('change', () => mostrar(selector.value));
+
     })();
     {% else %}
     const participacion = null;
@@ -5003,10 +5450,15 @@ def index():
     anuncios_nuevos = []
     anuncios_retirados = []
 
+    beta = usuario_actual() == USUARIO_BETA
     for a in anuncios:
         fecha_detectada = extraer_fecha_anuncio(a)
         a['fecha_display'] = fecha_detectada
-        dias = calcular_dias_activo(fecha_detectada, fecha_ultima_vista(a))
+        # Beta: un anuncio retirado de Meta deja de sumar días el día de su retiro.
+        fin_actividad = fecha_fin_anuncio(a) if beta else fecha_ultima_vista(a)
+        if beta and not a.get('presente_en_meta') and fin_actividad:
+            a['fecha_retiro_display'] = datetime.strptime(fin_actividad, '%Y-%m-%d').strftime('%d/%m/%Y')
+        dias = calcular_dias_activo(fecha_detectada, fin_actividad)
         a['dias_activo'] = dias
         
         estado_ad = str(a.get('estado', '')).strip().lower()
@@ -5091,6 +5543,9 @@ def index():
     top_palabras = contador_palabras.most_common(20)
     comparativa = comparativa_empresas(anuncios, palabras_ignoradas)
 
+    participacion_data = registros_participacion(anuncios) if beta else {'registros': [], 'sin_fin': {}}
+    resumen = resumen_semanal(anuncios, participacion_data['registros'], palabras_ignoradas) if beta else None
+
     keywords_chart_data = {
         "labels": [p[0].capitalize() for p in top_palabras],
         "values": [p[1] for p in top_palabras]
@@ -5150,7 +5605,10 @@ def index():
         historial_data=historial_data,
         comparativa=comparativa,
         campana_nombre=campana_nombre,
-        participacion_data=registros_participacion(anuncios) if usuario_actual() == USUARIO_BETA else {'registros': [], 'sin_fin': {}},
+        participacion_data=participacion_data,
+        resumen=resumen,
+        rol_resumen='producto' if usuario_actual() == 'product_owner' else 'mercadeo',
+        elige_rol_resumen=usuario_actual() in (USUARIO_ADMIN, USUARIO_BETA),
         destinos_data=destinos_data,
         iconos_destino=ICONOS_DESTINO,
         alerta_salud=alerta_salud,

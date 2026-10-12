@@ -30,6 +30,7 @@ def crear_tablas(cur):
     cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS destino VARCHAR(30);")
     cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS destino_url TEXT;")
     cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fecha_ultima_vista VARCHAR(10);")
+    cur.execute("ALTER TABLE anuncios ADD COLUMN IF NOT EXISTS fecha_retiro VARCHAR(10);")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS historial_activos (
             fecha DATE NOT NULL,
