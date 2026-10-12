@@ -294,8 +294,8 @@ def guardar_anuncio(anuncio, bloqueadas):
             ad_id = anuncio['link_individual'].split('id=')[-1]
 
         query = """
-            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, plataformas, formato, duracion_segundos, titulo, link_individual, presente_en_meta, imagen_url, destino, destino_url)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s, %s)
+            INSERT INTO anuncios (id_anuncio, compania, fecha_subida, estado, plataformas, formato, duracion_segundos, titulo, link_individual, presente_en_meta, imagen_url, destino, destino_url, fecha_ultima_vista)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s, %s, %s)
             ON CONFLICT (link_individual) DO UPDATE
             SET id_anuncio = COALESCE(NULLIF(EXCLUDED.id_anuncio, ''), NULLIF(anuncios.id_anuncio, '')),
                 compania = EXCLUDED.compania,
@@ -315,7 +315,8 @@ def guardar_anuncio(anuncio, bloqueadas):
                 presente_en_meta = TRUE,
                 imagen_url = COALESCE(NULLIF(EXCLUDED.imagen_url, ''), anuncios.imagen_url),
                 destino = COALESCE(NULLIF(EXCLUDED.destino, ''), anuncios.destino),
-                destino_url = COALESCE(NULLIF(EXCLUDED.destino_url, ''), anuncios.destino_url)
+                destino_url = COALESCE(NULLIF(EXCLUDED.destino_url, ''), anuncios.destino_url),
+                fecha_ultima_vista = EXCLUDED.fecha_ultima_vista
             RETURNING id;
         """
         cur.execute(query, (
@@ -331,6 +332,8 @@ def guardar_anuncio(anuncio, bloqueadas):
             anuncio.get('imagen_url'),
             anuncio.get('destino'),
             anuncio.get('destino_url'),
+            # Último día (hora de Venezuela) en que el bot vio el anuncio publicado.
+            (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d'),
         ))
         res = cur.fetchone()
         conn.commit()

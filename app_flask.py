@@ -601,15 +601,22 @@ def registros_participacion(anuncios):
     # y allí se calcula para el período elegido. Las variantes de una misma campaña (mismo inicio y texto)
     # comparten la clave "g" y cuentan una sola vez.
     registros, sin_fin = [], Counter()
+    # Mientras el bot de Meta no haya guardado ninguna "última vista", se cuenta hasta hoy lo que sigue publicado.
+    hay_vista_meta = any((a.get('fuente') or 'Meta') == 'Meta' and a.get('fecha_ultima_vista') for a in anuncios)
     for a in anuncios:
         compania = (a.get('compania') or '').strip()
         inicio = parse_date_str(a.get('fecha_display'))
         if not compania or not inicio or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', inicio):
             continue
         fin = fecha_ultima_vista(a)
-        if not fin and not a.get('presente_en_meta'):
-            sin_fin[compania] += 1  # Retirado de Meta: no se sabe qué día se apagó.
-            continue
+        if (a.get('fuente') or 'Meta') == 'Meta':
+            # El bot de Meta guarda el último día en que vio cada anuncio: se cuenta hasta ese día. Así no
+            # suman los anuncios viejos que Meta nunca marcó como retirados (búsquedas que no cargan completas).
+            vista = str(a.get('fecha_ultima_vista') or '')[:10]
+            fin = vista if re.fullmatch(r'\d{4}-\d{2}-\d{2}', vista) else None
+            if not fin and (hay_vista_meta or not a.get('presente_en_meta')):
+                sin_fin[compania] += 1  # Sin fecha de última vista (o retirado sin fecha): no se cuenta.
+                continue
         plataformas = [p for p in str(a.get('plataformas') or '').split(',') if p.strip()]
         peso = 1 + min(0.5, 0.25 * max(0, len(plataformas) - 1))
         if 'video' in str(a.get('formato') or '').lower() or (a.get('duracion_segundos') or 0) > 0:
@@ -2445,9 +2452,9 @@ HTML_TEMPLATE = """
                         <thead class="table-light">
                             <tr class="small text-muted">
                                 <th>Empresa</th>
-                                <th class="text-center">Campañas</th>
-                                <th class="text-center" title="Días que cada campaña estuvo activa en el período, ponderados por plataformas y formato">Días-anuncio</th>
-                                <th>Participación</th>
+                                <th class="text-center" style="width: 120px;">Campañas</th>
+                                <th class="text-center" style="width: 130px;" title="Días que cada campaña estuvo activa en el período, ponderados por plataformas y formato">Días-anuncio</th>
+                                <th style="width: 45%;">Participación</th>
                             </tr>
                         </thead>
                         <tbody id="participacionCuerpo"></tbody>
@@ -2456,10 +2463,10 @@ HTML_TEMPLATE = """
                 <details class="small text-muted">
                     <summary>¿Cómo se calcula?</summary>
                     <ul class="mb-0 mt-1 ps-3">
-                        <li><strong>Días-anuncio:</strong> días que cada anuncio estuvo activo dentro del período. Las variantes de una misma campaña (mismo día de inicio y mismo texto) cuentan una sola vez.</li>
+                        <li><strong>Días-anuncio:</strong> días que cada anuncio estuvo activo dentro del período, hasta la última vez que los bots lo vieron publicado. Las variantes de una misma campaña (mismo día de inicio y mismo texto) cuentan una sola vez.</li>
                         <li>Cada plataforma extra suma 25 % (hasta +50 %) y los videos suman 20 %, porque suelen costar más.</li>
                         <li><strong>Participación:</strong> parte de los días-anuncio de todas las empresas.</li>
-                        <li>Usa los filtros del panel. Los anuncios retirados de Meta no se cuentan porque no se sabe qué día se apagaron{% if participacion_data.sin_fin %} ({{ participacion_data.sin_fin.values()|sum }} en total){% endif %}. Si Meta no dejó cargar todos los anuncios de una empresa (pasa con Fina), su participación queda por debajo.</li>
+                        <li>Usa los filtros del panel. Los anuncios de Meta sin fecha de última vista no se cuentan{% if participacion_data.sin_fin %} ({{ participacion_data.sin_fin.values()|sum }} en total){% endif %}. Si Meta no dejó cargar todos los anuncios de una empresa (pasa con Fina), su participación queda por debajo.</li>
                     </ul>
                 </details>
             </div>
@@ -3733,9 +3740,9 @@ HTML_TEMPLATE = """
                 tr.innerHTML = `<td class="fw-bold"></td>
                     <td class="text-center"><button type="button" class="btn btn-link btn-sm p-0 text-decoration-none" aria-expanded="false">${e.campanas} <i class="bi bi-chevron-down small" aria-hidden="true"></i></button></td>
                     <td class="text-center">${Math.round(e.diasAnuncio).toLocaleString('es-VE')}</td>
-                    <td style="min-width: 220px;"><div class="d-flex align-items-center gap-2">
+                    <td style="min-width: 220px;"><div class="d-flex align-items-center gap-3">
                         <div class="progress flex-grow-1" style="height: 8px;" aria-hidden="true"><div class="progress-bar" style="width: ${e.pct}%;"></div></div>
-                        <span class="small fw-semibold text-nowrap">${e.pct.toLocaleString('es-VE')} %</span></div></td>`;
+                        <span class="small fw-semibold text-nowrap text-end" style="width: 3.8rem;">${e.pct.toLocaleString('es-VE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %</span></div></td>`;
                 tr.cells[0].textContent = e.compania;
                 const boton = tr.cells[1].querySelector('button');
                 boton.setAttribute('aria-label', `Ver las ${e.campanas} campañas de ${e.compania}`);
