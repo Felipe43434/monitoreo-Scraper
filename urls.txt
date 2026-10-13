@@ -10,3 +10,4 @@ Gálac | Gálac Software | https://www.facebook.com/ads/library/?active_status=a
 TVirtual | https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=105244234624720
 Lealty Group | https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=108753608816455
 Lealty Group | Saul Casanova | https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=108457944815848
+Infocent | Infocent | https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=103509821614497
