@@ -63,6 +63,9 @@ FUNCIONES_NUEVAS = {
     'salud': '2026-10-11',
     'buscar_termino': '2026-10-11',
     'palabras_excluidas': '2026-10-12',
+    'participacion': '2026-10-13',
+    'resumen_semanal': '2026-10-13',
+    'evolucion': '2026-10-13',
 }
 
 def hoy_venezuela():
@@ -608,7 +611,7 @@ def clave_campana(ad):
     return hashlib.md5(base.encode('utf-8')).hexdigest()[:10]
 
 def registros_participacion(anuncios):
-    # Base de la "Participación Publicitaria" (Beta): se manda al navegador el período activo de cada anuncio
+    # Base de la "Participación Publicitaria": se manda al navegador el período activo de cada anuncio
     # y allí se calcula para el período elegido. Las variantes de una misma campaña (mismo inicio y texto)
     # comparten la clave "g" y cuentan una sola vez.
     registros, sin_fin = [], Counter()
@@ -671,7 +674,7 @@ def categoria_formato(ad):
     return 'Imagen'
 
 def resumen_semanal(anuncios, registros, palabras_ignoradas):
-    # Pestaña "Resumen Semanal" (Beta): últimos 7 días frente a los 7 anteriores. Mercadeo ve campañas, formatos,
+    # Pestaña "Resumen Semanal": últimos 7 días frente a los 7 anteriores. Mercadeo ve campañas, formatos,
     # mensajes y participación; Product Owner ve productos, oportunidades frente a Gálac y productos nuevos.
     hoy = hoy_venezuela()
     inicio_semana, inicio_anterior = hoy - timedelta(days=6), hoy - timedelta(days=13)
@@ -1096,7 +1099,7 @@ def fecha_ultima_vista(ad):
     return str(valor).strip()[:10] if valor else None
 
 def fecha_fin_anuncio(ad):
-    # Último día en que el anuncio estuvo activo (Beta). Google informa su última vista; en Meta, uno que sigue
+    # Último día en que el anuncio estuvo activo. Google informa su última vista; en Meta, uno que sigue
     # publicado está activo hoy (None) y uno retirado terminó el día de su retiro o de su última vista.
     if (ad.get('fuente') or 'Meta') == 'Google':
         return fecha_ultima_vista(ad)
@@ -2598,10 +2601,10 @@ HTML_TEMPLATE = """
                 <i class="bi bi-chat-square-quote"></i> Términos Frecuentes
             </button>
         </li>
-        {% if es_beta and resumen %}
+        {% if resumen %}
         <li class="nav-item">
             <button class="nav-link {% if pestana_activa == 'tab-resumen' %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-resumen" type="button">
-                <i class="bi bi-journal-text"></i> Resumen Semanal <span class="badge bg-warning text-dark ms-1">BETA</span>
+                <i class="bi bi-journal-text"></i> Resumen Semanal {{ nuevo('resumen_semanal') }}
             </button>
         </li>
         {% endif %}
@@ -2672,13 +2675,11 @@ HTML_TEMPLATE = """
                 <div class="col-lg-7">
                     <div class="card-custom p-3 h-100">
                         <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-1">
-                            <h6 class="fw-bold m-0"><i class="bi bi-activity"></i> {% if es_beta %}Evolución en el Tiempo{% else %}Anuncios Activos en el Tiempo {{ nuevo('historial_activos') }}{% endif %}</h6>
-                            {% if es_beta %}
+                            <h6 class="fw-bold m-0"><i class="bi bi-activity"></i> Evolución en el Tiempo {{ nuevo('evolucion') }}</h6>
                             <select id="evolucionVista" class="form-select form-select-sm w-auto" aria-label="Gráfico a mostrar">
                                 <option value="activos">Anuncios activos</option>
                                 <option value="participacion">Participación semanal</option>
                             </select>
-                            {% endif %}
                         </div>
                         <div data-vista="activos">
                             <p class="small text-muted mb-2">Cuántos anuncios tenía activos cada empresa en cada corrida de los bots (últimos 90 días).</p>
@@ -2688,12 +2689,10 @@ HTML_TEMPLATE = """
                             <div class="text-center text-muted py-5 small"><i class="bi bi-hourglass-split fs-3 d-block mb-2"></i>El gráfico se irá llenando con cada corrida de los bots{% if historial_data.fechas %} (hay datos de {{ historial_data.fechas[0] }}){% endif %}.</div>
                             {% endif %}
                         </div>
-                        {% if es_beta %}
                         <div data-vista="participacion" hidden>
                             <p class="small text-muted mb-2">Participación publicitaria semana a semana (últimas 12 semanas) de las 6 empresas con más presencia.</p>
                             <div style="height: 300px; position: relative;"><canvas id="participacionSemanal"></canvas></div>
                         </div>
-                        {% endif %}
                     </div>
                 </div>
                 <div class="col-lg-5">
@@ -2709,12 +2708,11 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            {% if es_beta %}
-            <!-- Participación publicitaria (Beta) -->
+            <!-- Participación publicitaria -->
             <div class="card-custom p-3 mb-4" id="tarjetaParticipacion">
                 <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-2">
                     <div style="max-width: 600px;">
-                        <h6 class="fw-bold mb-1"><i class="bi bi-pie-chart-fill"></i> Participación Publicitaria <span class="badge bg-warning text-dark">BETA</span></h6>
+                        <h6 class="fw-bold mb-1"><i class="bi bi-pie-chart-fill"></i> Participación Publicitaria {{ nuevo('participacion') }}</h6>
                         <p class="small text-muted mb-0">Qué parte de la presencia publicitaria tiene cada empresa, según cuántos anuncios tuvo activos y durante cuántos días.</p>
                     </div>
                     <div>
@@ -2748,7 +2746,6 @@ HTML_TEMPLATE = """
                     </ul>
                 </details>
             </div>
-            {% endif %}
 
             <!-- Tabla de Empresas Registradas -->
             <div class="card-custom overflow-hidden reveal-scroll">
@@ -2882,7 +2879,7 @@ HTML_TEMPLATE = """
                                 <td class="small text-muted" style="min-width: 320px; max-width: 440px;">
                                     {% set texto_ad = ad.texto or ad.titulo or 'Sin descripción' %}
                                     {% if texto_ad|length > largo_texto %}<span class="texto-completo" tabindex="0" data-bs-title="{{ texto_ad }}">{{ texto_ad[:largo_texto] }}...</span>{% else %}{{ texto_ad[:largo_texto] }}{% if (ad.texto or ad.titulo or '')|length > largo_texto %}...{% endif %}{% endif %}
-                                    {% if es_beta and ad.campana_total > 1 and not request.args.get('campana') %}
+                                    {% if ad.campana_total > 1 and not request.args.get('campana') %}
                                     <div class="mt-1"><a class="small text-decoration-none" href="{{ url_con_filtros(campana=ad.campana, pestana='tab-ads') }}"><i class="bi bi-collection"></i> Ver los {{ ad.campana_total }} anuncios de esta campaña</a></div>
                                     {% endif %}
                                     {% if ad.productos %}
@@ -3201,13 +3198,13 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        {% if es_beta and resumen %}
-        <!-- Panel 7: Resumen semanal (Beta). Mercadeo y Product Owner ven enfoques distintos. -->
+        {% if resumen %}
+        <!-- Panel 7: Resumen semanal. Mercadeo y Product Owner ven enfoques distintos. -->
         {% set k = resumen.kpis %}
         <div class="tab-pane fade{% if pestana_activa == 'tab-resumen' %} show active{% endif %}" id="tab-resumen">
             <div class="card-custom p-3 mb-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
                 <div>
-                    <h6 class="fw-bold mb-1"><i class="bi bi-journal-text"></i> Resumen Semanal <span class="badge bg-warning text-dark">BETA</span></h6>
+                    <h6 class="fw-bold mb-1"><i class="bi bi-journal-text"></i> Resumen Semanal</h6>
                     <p class="small text-muted mb-0">Del {{ resumen.desde }} al {{ resumen.hasta }}, comparado con los 7 días anteriores. Usa los filtros del panel.</p>
                 </div>
                 {% if elige_rol_resumen %}
@@ -3907,7 +3904,7 @@ HTML_TEMPLATE = """
         });
     })();
 
-    // Resumen semanal (Beta): el Administrador y Funciones Beta pueden alternar entre Mercadeo y Product Owner.
+    // Resumen semanal: el Administrador y Funciones Beta pueden alternar entre Mercadeo y Product Owner.
     (function enfoqueResumen() {
         const grupo = document.getElementById('resumenRol');
         if (!grupo) return;
@@ -4235,8 +4232,7 @@ HTML_TEMPLATE = """
     })();
     {% endif %}
 
-    {% if es_beta %}
-    // Participación publicitaria (Beta): días que cada campaña estuvo activa en el período (las variantes cuentan
+    // Participación publicitaria: días que cada campaña estuvo activa en el período (las variantes cuentan
     // una vez), ponderados por plataformas y formato. Meta y Google no publican el gasto de anuncios comerciales.
     const participacion = (function () {
         const base = {{ participacion_data|tojson }};
@@ -4364,7 +4360,7 @@ HTML_TEMPLATE = """
 
     })();
 
-    // Evolución en el tiempo (Beta): la tarjeta de "Anuncios activos" también muestra la participación semanal,
+    // Evolución en el tiempo: la tarjeta de "Anuncios activos" también muestra la participación semanal,
     // que se elige con un selector; el gráfico se crea al mostrarlo por primera vez (oculto mediría 0 px).
     (function evolucionEnElTiempo() {
         const selector = document.getElementById('evolucionVista');
@@ -4402,9 +4398,6 @@ HTML_TEMPLATE = """
         selector.addEventListener('change', () => mostrar(selector.value));
 
     })();
-    {% else %}
-    const participacion = null;
-    {% endif %}
 
     // Comparar compañías: la selección vive en la URL (?comparar=A&comparar=B) para poder compartirla.
     (function compararCompanias() {
@@ -5430,7 +5423,7 @@ def index():
     if productos_sel:
         anuncios = [a for a in anuncios if coincide_producto(a['productos'], productos_sel)]
 
-    # Campañas (Beta): cada anuncio sabe a qué campaña pertenece y cuántos anuncios tiene esa campaña.
+    # Campañas: cada anuncio sabe a qué campaña pertenece y cuántos anuncios tiene esa campaña.
     for a in anuncios:
         a['campana'] = clave_campana(a)
     anuncios_por_campana = Counter(a['campana'] for a in anuncios)
@@ -5450,13 +5443,12 @@ def index():
     anuncios_nuevos = []
     anuncios_retirados = []
 
-    beta = usuario_actual() == USUARIO_BETA
     for a in anuncios:
         fecha_detectada = extraer_fecha_anuncio(a)
         a['fecha_display'] = fecha_detectada
-        # Beta: un anuncio retirado de Meta deja de sumar días el día de su retiro.
-        fin_actividad = fecha_fin_anuncio(a) if beta else fecha_ultima_vista(a)
-        if beta and not a.get('presente_en_meta') and fin_actividad:
+        # Un anuncio retirado de Meta deja de sumar días el día de su retiro.
+        fin_actividad = fecha_fin_anuncio(a)
+        if not a.get('presente_en_meta') and fin_actividad:
             a['fecha_retiro_display'] = datetime.strptime(fin_actividad, '%Y-%m-%d').strftime('%d/%m/%Y')
         dias = calcular_dias_activo(fecha_detectada, fin_actividad)
         a['dias_activo'] = dias
@@ -5543,8 +5535,8 @@ def index():
     top_palabras = contador_palabras.most_common(20)
     comparativa = comparativa_empresas(anuncios, palabras_ignoradas)
 
-    participacion_data = registros_participacion(anuncios) if beta else {'registros': [], 'sin_fin': {}}
-    resumen = resumen_semanal(anuncios, participacion_data['registros'], palabras_ignoradas) if beta else None
+    participacion_data = registros_participacion(anuncios)
+    resumen = resumen_semanal(anuncios, participacion_data['registros'], palabras_ignoradas)
 
     keywords_chart_data = {
         "labels": [p[0].capitalize() for p in top_palabras],
@@ -6017,7 +6009,7 @@ def descargar_excel():
             df = df[[clave_campana(r) == campana_sel for r in df.to_dict('records')]]
 
         df['fecha_subida_detectada'] = df.apply(lambda row: extraer_fecha_anuncio(row.to_dict()), axis=1)
-        df['dias_activo'] = df.apply(lambda r: calcular_dias_activo(r['fecha_subida_detectada'], fecha_ultima_vista(r.to_dict())), axis=1)
+        df['dias_activo'] = df.apply(lambda r: calcular_dias_activo(r['fecha_subida_detectada'], fecha_fin_anuncio(r.to_dict())), axis=1)
         df['es_winning_ad'] = df.apply(lambda r: (r['dias_activo'] >= DIAS_LONGEVO and str(r.get('estado', '')).strip().lower() == 'activo'), axis=1)
 
         output = io.BytesIO()
