@@ -10,7 +10,7 @@ import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode, urlparse, parse_qs, quote
+from urllib.parse import urlencode, urlparse, parse_qs, parse_qsl, quote
 from collections import Counter
 from functools import wraps
 import pandas as pd
@@ -220,7 +220,7 @@ def ultimas_corridas(cur):
     # Última corrida de cada bot y si hay algo que revisar (falló, vino vacía o no corre hace días).
     cur.execute("""
         SELECT DISTINCT ON (fuente) fuente, estado, anuncios, empresas, errores, url_ejecucion,
-               to_char(fin AT TIME ZONE 'America/Caracas', 'YYYY-MM-DD HH24:MI') AS fin_local,
+               fin, to_char(fin AT TIME ZONE 'America/Caracas', 'YYYY-MM-DD HH24:MI') AS fin_local,
                (NOW() - fin) > INTERVAL '%s days' AS atrasada
         FROM corridas_scraper ORDER BY fuente, inicio DESC
     """ % DIAS_CORRIDA_ATRASADA)
@@ -234,6 +234,31 @@ def ultimas_corridas(cur):
         r['problema'] = r['estado'] not in ('ok', 'sin_datos')
         resumen.append(r)
     return resumen
+
+# Estado de los bots en la barra (Beta): la última corrida terminada sale de la base y la corrida en
+# curso, de GitHub Actions. La respuesta de GitHub se guarda 20 s para no gastar el límite de la API
+# con cada pestaña abierta del panel.
+USUARIOS_ESTADO_BOTS = (USUARIO_BETA,)
+_bots_en_curso = {'hasta': None, 'datos': {}}
+
+def bots_en_curso():
+    ahora = datetime.now(timezone.utc)
+    if _bots_en_curso['hasta'] and ahora < _bots_en_curso['hasta']:
+        return _bots_en_curso['datos']
+    datos = {}
+    if GITHUB_TOKEN and GITHUB_REPO:
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        for fuente, archivo in (('Meta', WORKFLOW_FILE), ('Google', WORKFLOW_GOOGLE_FILE)):
+            try:
+                r = requests.get(f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{archivo}/runs",
+                                 params={'per_page': 1}, headers=headers, timeout=5)
+                corridas = (r.json().get('workflow_runs') or []) if r.ok else []
+                if corridas and corridas[0].get('status') in ('queued', 'in_progress', 'waiting', 'requested', 'pending'):
+                    datos[fuente] = corridas[0].get('run_started_at') or corridas[0].get('created_at')
+            except Exception as e:
+                print(f"Error consultando la corrida en curso de {fuente}: {e}")
+    _bots_en_curso.update(hasta=ahora + timedelta(seconds=20), datos=datos)
+    return datos
 
 def url_con_filtros(**cambios):
     # Enlace al panel que conserva los filtros actuales (búsqueda, fuente, productos...) y solo
@@ -336,6 +361,17 @@ def init_config_tables():
                         palabra VARCHAR(40) NOT NULL,
                         fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         PRIMARY KEY (usuario, palabra)
+                    );
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS vistas_guardadas (
+                        id SERIAL PRIMARY KEY,
+                        usuario VARCHAR(50) NOT NULL,
+                        nombre VARCHAR(60) NOT NULL,
+                        consulta TEXT NOT NULL,
+                        autor VARCHAR(40),
+                        fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE (usuario, nombre)
                     );
                 """)
                 cur.execute("""
@@ -1023,6 +1059,57 @@ def json_login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+# Vistas guardadas (Beta): combinaciones de filtros y pestaña con un nombre. Varias personas entran con
+# la misma cuenta, así que las vistas son del equipo de esa cuenta; "autor" es el nombre que cada
+# persona dejó en su navegador (opcional, solo para saber quién la guardó).
+USUARIOS_VISTAS_GUARDADAS = (USUARIO_BETA,)
+PARAMETROS_VISTA = ('q', 'compania', 'estado', 'formato', 'plataforma', 'tiempo', 'duracion', 'fuente', 'producto', 'campana', 'pestana')
+MAXIMO_VISTAS = 40
+NOMBRES_PESTANA = {'tab-charts': 'Vista general', 'tab-ads': 'Detalle de anuncios', 'tab-winning': 'Más longevos',
+                   'tab-retirados': 'Retirados', 'tab-new': 'Nuevos anuncios', 'tab-keywords': 'Términos frecuentes',
+                   'tab-resumen': 'Resumen semanal'}
+NOMBRES_VALOR_VISTA = {'corta': 'Videos < 15s', 'media': 'Videos de 15s a 60s', 'larga': 'Videos > 60s', 'sin_video': 'Estáticos',
+                       'Activo': 'Activos', 'Inactivo': 'Inactivos', 'video': 'Video', 'imagen': 'Imagen', 'texto': 'Texto',
+                       'carrusel': 'Carrusel', 'dinámico': 'Dinámico'}
+
+def limpiar_consulta_vista(consulta):
+    # Solo filtros conocidos y sin los valores por defecto; ordenados para comparar vistas entre sí.
+    pares = sorted((k, v.strip()) for k, v in parse_qsl(str(consulta or '').lstrip('?'))
+                   if k in PARAMETROS_VISTA and v.strip() and v.strip() not in ('todo', 'todas', 'tab-charts'))
+    return urlencode(pares)
+
+def resumen_vista(consulta):
+    partes, pestana = [], None
+    for clave, valor in parse_qsl(consulta):
+        if clave == 'pestana':
+            pestana = NOMBRES_PESTANA.get(valor)
+        elif clave == 'q':
+            partes.append(f'"{valor}"')
+        elif clave == 'campana':
+            partes.append('Una campaña')
+        elif clave == 'tiempo' and re.fullmatch(r'\d+d', valor):
+            partes.append(f'Últimos {valor[:-1]} días')
+        else:
+            partes.append(NOMBRES_VALOR_VISTA.get(valor, valor))
+    texto = ' · '.join(partes)
+    if not texto:
+        return pestana or 'Sin filtros'
+    return f'{texto} — {pestana}' if pestana else texto
+
+def vistas_guardadas_de(usuario):
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, nombre, consulta, autor FROM vistas_guardadas WHERE usuario = %s ORDER BY lower(nombre);", (usuario,))
+            return [dict(v, resumen=resumen_vista(v['consulta'])) for v in cur.fetchall()]
+    except Exception as e:
+        print(f"Error leyendo las vistas guardadas: {e}")
+        return []
+    finally:
+        conn.close()
+
 def parse_urls_txt(raw_text):
     items = []
     if not raw_text:
@@ -1271,6 +1358,44 @@ HTML_TEMPLATE = """
         // El tema guardado se aplica antes de pintar la página: así el modo oscuro no da un destello blanco al recargar (p. ej. al quitar un filtro).
         try { if (localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-bs-theme', 'dark'); } catch (e) {}
     </script>
+    {% if es_beta %}
+    <script>
+        // Recordar dónde quedaste (Beta): cada navegador guarda su última pestaña y filtros (varias personas
+        // comparten la misma cuenta). Al entrar al panel sin filtros se abre esa vista, una vez por pestaña
+        // del navegador; después, el logo y "Limpiar" llevan al panel limpio como siempre.
+        (function recordarVista() {
+            const clave = 'ultimaVista:' + {{ usuario_nombre|tojson }};
+            if (location.pathname !== '/') return;
+            const actual = new URLSearchParams(location.search);
+            const msg = actual.get('msg');
+            actual.delete('msg');
+            let saliendo = false;
+            try {
+                const guardada = localStorage.getItem(clave);
+                const yaRestaurada = sessionStorage.getItem('vistaRestaurada');
+                sessionStorage.setItem('vistaRestaurada', '1');
+                // Tras sincronizar o editar algo, el panel vuelve con ?msg=: también se recupera la vista.
+                if (!actual.toString() && guardada && (!yaRestaurada || msg)) {
+                    const destino = new URLSearchParams(guardada);
+                    if (msg) destino.set('msg', msg);
+                    else sessionStorage.setItem('avisoVistaRestaurada', '1');
+                    saliendo = true;
+                    location.replace('/?' + destino.toString());
+                    return;
+                }
+            } catch (e) { return; }
+            const guardar = () => {
+                if (saliendo) return;
+                const params = new URLSearchParams(location.search);
+                params.delete('msg');
+                try { localStorage.setItem(clave, params.toString()); } catch (e) {}
+            };
+            guardar();
+            window.addEventListener('pagehide', guardar);
+            document.addEventListener('visibilitychange', () => { if (document.hidden) guardar(); });
+        })();
+    </script>
+    {% endif %}
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gálac Ads Intelligence</title>
@@ -1640,6 +1765,17 @@ HTML_TEMPLATE = """
             .diseno-v2 .navbar-brand { font-size: 1rem; margin-right: 0; }
             .diseno-v2 .navbar-brand > i { display: none; }
         }
+        /* Estado de los bots y vistas guardadas (Beta) */
+        .estado-bots { font-size: .75rem; }
+        .estado-bot { display: inline-flex; align-items: center; gap: .3rem; padding: .2rem .55rem; border-radius: 999px;
+                      color: #cbd5e1; background: rgba(148, 163, 184, .12); border: 1px solid rgba(148, 163, 184, .22); white-space: nowrap; }
+        .estado-bot.en-curso { color: #7dd3fc; border-color: rgba(125, 211, 252, .45); }
+        .estado-bot.en-curso .spinner-grow { width: .55rem; height: .55rem; }
+        .estado-bot.con-problema { color: #fcd34d; border-color: rgba(252, 211, 77, .45); }
+        .vistas-menu { min-width: 300px; max-width: min(380px, 92vw); max-height: 60vh; overflow-y: auto; }
+        .vista-item .dropdown-item { min-width: 0; white-space: normal; }
+        .vista-item .vista-detalle { color: var(--bs-secondary-color); }
+        .vista-item .dropdown-item.active .vista-detalle { color: rgba(255, 255, 255, .85); }
     </style>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1674,6 +1810,11 @@ HTML_TEMPLATE = """
         <div class="d-flex flex-wrap py-2 py-lg-0 align-items-center gap-2 ms-auto">
             
 
+            {% if es_beta %}
+            <!-- Estado de los bots (Beta): última corrida y corrida en curso; avisa cuando hay datos nuevos. -->
+            <div id="estadoBots" class="estado-bots d-flex flex-wrap align-items-center gap-2" role="status" aria-live="polite" aria-label="Estado de los bots"></div>
+            <button type="button" id="datosNuevos" class="btn btn-sm btn-warning text-nowrap d-none align-items-center gap-1"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i> <span></span></button>
+            {% endif %}
             <div class="sync-container d-flex flex-column gap-1 ms-1">
                 <form action="/lanzar_scraper" method="POST" id="scraperForm" onsubmit="startInlineScraping(event)" class="d-flex align-items-center gap-2 m-0">
                     <select name="dias_scraping" id="selectDiasScraping" aria-label="Días a revisar al sincronizar" class="form-select form-select-sm bg-dark text-light border-secondary" style="width: 100px;">
@@ -2200,6 +2341,33 @@ HTML_TEMPLATE = """
     </div>
 </div>
 
+{% if es_beta %}
+<!-- Modal: guardar la vista actual (Beta; las vistas son de todos los que usan esta cuenta) -->
+<div class="modal fade" id="modalGuardarVista" tabindex="-1" aria-labelledby="guardarVistaTitulo">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content card-custom">
+            <div class="modal-header border-secondary border-opacity-25">
+                <h5 class="modal-title fw-bold" id="guardarVistaTitulo"><i class="bi bi-bookmark-plus text-primary"></i> Guardar la vista actual</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+            </div>
+            <form class="modal-body p-4" id="guardarVistaForm">
+                <p class="small text-muted mb-2">Se guardan los filtros y la pestaña que tienes abiertos. La verán todas las personas que entran con el usuario <strong>{{ usuario_nombre }}</strong>.</p>
+                <div class="small mb-3 p-2 rounded border" id="guardarVistaResumen"></div>
+                <label for="vistaNombre" class="form-label small fw-semibold mb-1">Nombre de la vista</label>
+                <input type="text" class="form-control form-control-sm" id="vistaNombre" maxlength="60" required autocomplete="off" placeholder="Por ejemplo: Videos de Profit en Meta">
+                <label for="vistaAutor" class="form-label small fw-semibold mb-1 mt-3">Tu nombre <span class="fw-normal text-muted">(opcional; este navegador lo recuerda)</span></label>
+                <input type="text" class="form-control form-control-sm" id="vistaAutor" maxlength="40" autocomplete="given-name" placeholder="Para que el equipo sepa quién la guardó">
+                <div class="small text-danger mt-2 d-none" id="guardarVistaError" role="alert"></div>
+                <div class="d-flex justify-content-end gap-2 mt-4">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-bookmark-plus"></i> Guardar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 {% if excluye_palabras %}
 <!-- Modal: palabras excluidas de "Términos Frecuentes" (una lista por usuario) -->
 <div class="modal fade" id="modalPalabrasExcluidas" tabindex="-1" aria-labelledby="palabrasExcluidasTitulo">
@@ -2308,6 +2476,14 @@ HTML_TEMPLATE = """
     {% elif msg %}
     <div class="alert alert-info alert-dismissible fade show border-0 shadow-sm" role="alert">
         {{ msg }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Cerrar"></button>
+    </div>
+    {% endif %}
+    {% if es_beta %}
+    <div id="avisoVistaRestaurada" class="alert alert-light border d-none align-items-center gap-2 py-2 small" role="status">
+        <i class="bi bi-clock-history text-primary" aria-hidden="true"></i>
+        <span>Abriste el panel donde quedaste la última vez en este navegador.</span>
+        <a href="/" class="ms-auto fw-semibold text-nowrap">Empezar de cero</a>
         <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Cerrar"></button>
     </div>
     {% endif %}
@@ -2533,6 +2709,28 @@ HTML_TEMPLATE = """
                 <button type="button" id="btnMasFiltros" aria-controls="filtroDuracion filtroPlataforma filtroFormato" class="btn btn-sm btn-outline-secondary text-nowrap d-flex align-items-center gap-1" aria-expanded="{{ 'true' if n_extra else 'false' }}" title="Duración, plataforma y formato">
                     <i class="bi bi-sliders"></i> Más filtros{% if n_extra %} ({{ n_extra }}){% endif %} {{ nuevo('mas_filtros') }}
                 </button>
+                {% if es_beta %}
+                <div class="dropdown" id="vistasGuardadas">
+                    <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle text-nowrap d-flex align-items-center gap-1" data-bs-toggle="dropdown" aria-expanded="false" title="Filtros y pestañas guardados por el equipo">
+                        <i class="bi bi-bookmark-star" aria-hidden="true"></i> Vistas <span id="vistasCuenta">{% if vistas_guardadas %}({{ vistas_guardadas|length }}){% endif %}</span>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end shadow-sm vistas-menu">
+                        <li><h6 class="dropdown-header">Vistas del equipo · {{ usuario_nombre }}</h6></li>
+                        {% for v in vistas_guardadas %}
+                        <li class="d-flex align-items-center vista-item">
+                            <a class="dropdown-item flex-grow-1 py-1{% if v.consulta == consulta_actual %} active{% endif %}" href="/?{{ v.consulta }}"{% if v.consulta == consulta_actual %} aria-current="true"{% endif %}>
+                                <div class="text-truncate fw-semibold">{{ v.nombre }}</div>
+                                <div class="small vista-detalle text-truncate">{{ v.resumen }}{% if v.autor %} · {{ v.autor }}{% endif %}</div>
+                            </a>
+                            <button type="button" class="btn btn-sm btn-link text-danger vista-eliminar flex-shrink-0" data-id="{{ v.id }}" data-nombre="{{ v.nombre }}" title="Eliminar" aria-label="Eliminar la vista «{{ v.nombre }}»"><i class="bi bi-trash3" aria-hidden="true"></i></button>
+                        </li>
+                        {% endfor %}
+                        <li id="vistasVacio" class="{% if vistas_guardadas %}d-none{% endif %}"><span class="dropdown-item-text small text-muted">Todavía no hay vistas. Filtra el panel y guárdalo aquí para volver con un clic.</span></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#modalGuardarVista"><i class="bi bi-bookmark-plus" aria-hidden="true"></i> Guardar la vista actual…</button></li>
+                    </ul>
+                </div>
+                {% endif %}
                 <a href="/?pestana={{ pestana_activa }}" id="limpiarFiltros" class="btn btn-sm btn-outline-secondary text-nowrap d-flex align-items-center gap-1" title="Quitar todos los filtros"><i class="bi bi-trash3"></i> Limpiar</a>
                 <a href="/descargar_excel?{{ request.query_string.decode() }}" class="btn btn-sm btn-success text-nowrap d-flex align-items-center gap-1" title="Descargar los anuncios filtrados en Excel">
                     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="1" width="14" height="14" rx="2.5" fill="#fff"/><path d="M5.3 4.6l5.4 6.8M10.7 4.6l-5.4 6.8" stroke="#107C41" stroke-width="1.9" stroke-linecap="round"/></svg>
@@ -3921,6 +4119,157 @@ HTML_TEMPLATE = """
         try { const guardado = localStorage.getItem('resumenRol'); if (guardado) mostrar(guardado); } catch (e) {}
         grupo.addEventListener('click', e => { const b = e.target.closest('[data-rol]'); if (b) mostrar(b.dataset.rol); });
     })();
+
+    {% if es_beta %}
+    // Aviso de "Recordar dónde quedaste" (el cambio de vista lo hace el script del <head>).
+    (function avisoVistaRestaurada() {
+        try {
+            if (!sessionStorage.getItem('avisoVistaRestaurada')) return;
+            sessionStorage.removeItem('avisoVistaRestaurada');
+        } catch (e) { return; }
+        const aviso = document.getElementById('avisoVistaRestaurada');
+        if (aviso) { aviso.classList.remove('d-none'); aviso.classList.add('d-flex'); }
+    })();
+
+    // Estado de los bots en la barra (Beta): cuándo terminó la última corrida de cada bot y si hay una en
+    // curso. Se consulta cada minuto con el panel a la vista (cada 20 s mientras un bot corre) y, cuando
+    // termina una corrida nueva, aparece un botón para recargar los datos sin perder los filtros.
+    (function estadoBots() {
+        const caja = document.getElementById('estadoBots');
+        const botonNuevos = document.getElementById('datosNuevos');
+        if (!caja) return;
+        const iconos = {Meta: 'bi-meta', Google: 'bi-google'};
+        const aviso = document.querySelector('.aviso-destacado');
+        const lanzadoEn = aviso && aviso.textContent.includes('lanzados') ? Date.now() : 0;
+        let base = null, espera = null;
+        const minutosDesde = iso => Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000));
+        function hace(iso) {
+            const min = minutosDesde(iso);
+            if (min < 1) return 'hace un momento';
+            if (min < 60) return `hace ${min} min`;
+            const h = Math.round(min / 60);
+            if (h < 24) return `hace ${h} h`;
+            const d = Math.round(h / 24);
+            return `hace ${d} día${d === 1 ? '' : 's'}`;
+        }
+        const fecha = iso => new Date(iso).toLocaleString('es-VE', {timeZone: 'America/Caracas', day: '2-digit', month: '2-digit', hour: 'numeric', minute: '2-digit'});
+        function pintar(bots) {
+            caja.replaceChildren(...bots.map(b => {
+                const pastilla = document.createElement('span');
+                pastilla.className = 'estado-bot' + (b.en_curso ? ' en-curso' : (b.problema ? ' con-problema' : ''));
+                const icono = document.createElement('i');
+                icono.className = b.en_curso ? 'spinner-grow spinner-grow-sm' : 'bi ' + iconos[b.fuente];
+                icono.setAttribute('aria-hidden', 'true');
+                const texto = b.en_curso ? `${b.fuente}: buscando…` : (b.fin ? `${b.fuente}: ${hace(b.fin)}` : `${b.fuente}: sin registros`);
+                pastilla.append(icono, ' ' + texto);
+                if (b.problema && !b.en_curso) {
+                    const alerta = document.createElement('i');
+                    alerta.className = 'bi bi-exclamation-triangle-fill ms-1';
+                    alerta.setAttribute('aria-hidden', 'true');
+                    pastilla.append(alerta);
+                }
+                pastilla.title = b.en_curso
+                    ? `El bot de ${b.fuente} está buscando anuncios${b.inicio_en_curso ? ` (empezó ${hace(b.inicio_en_curso)})` : ''}.`
+                    : (b.fin ? `Última corrida de ${b.fuente}: ${fecha(b.fin)} · ${b.etiqueta || ''}` : `Todavía no hay corridas registradas de ${b.fuente}.`);
+                pastilla.setAttribute('aria-label', pastilla.title);
+                return pastilla;
+            }));
+            if (!base) base = Object.fromEntries(bots.map(b => [b.fuente, b.fin]));
+            const nuevos = bots.filter(b => b.fin && b.fin !== base[b.fuente]).map(b => b.fuente);
+            if (nuevos.length) {
+                botonNuevos.querySelector('span').textContent = `Datos nuevos de ${nuevos.join(' y ')} · Actualizar`;
+                botonNuevos.classList.remove('d-none');
+                botonNuevos.classList.add('d-flex');
+            }
+        }
+        async function consultar() {
+            clearTimeout(espera);
+            let corriendo = false;
+            try {
+                const r = await fetch('/estado_bots', {cache: 'no-store'});
+                const datos = await r.json();
+                if (r.ok && datos.ok) {
+                    pintar(datos.bots);
+                    corriendo = datos.bots.some(b => b.en_curso);
+                }
+            } catch (e) {}
+            const rapido = corriendo || (lanzadoEn && Date.now() - lanzadoEn < 180000);
+            if (!document.hidden) espera = setTimeout(consultar, rapido ? 20000 : 60000);
+        }
+        botonNuevos.addEventListener('click', () => {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('msg');
+            window.location.replace(url);
+        });
+        document.addEventListener('visibilitychange', () => { if (document.hidden) clearTimeout(espera); else consultar(); });
+        consultar();
+    })();
+
+    // Vistas guardadas (Beta): filtros y pestaña con nombre, compartidos por la cuenta. El nombre de quien
+    // la guarda queda en este navegador para no pedirlo cada vez.
+    (function vistasGuardadas() {
+        const ventana = document.getElementById('modalGuardarVista');
+        if (!ventana) return;
+        const form = document.getElementById('guardarVistaForm');
+        const nombre = document.getElementById('vistaNombre');
+        const autor = document.getElementById('vistaAutor');
+        const error = document.getElementById('guardarVistaError');
+        const resumen = document.getElementById('guardarVistaResumen');
+        const nombresPestana = {{ nombres_pestana|tojson }};
+        const existentes = () => [...document.querySelectorAll('.vista-eliminar')].map(b => b.dataset.nombre.toLowerCase());
+        const mostrarError = mensaje => { error.textContent = mensaje; error.classList.toggle('d-none', !mensaje); };
+        async function enviar(accion, datos) {
+            const r = await fetch('/vistas/' + accion, {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(datos),
+            });
+            const respuesta = await r.json().catch(() => ({}));
+            if (!r.ok || !respuesta.ok) throw new Error(respuesta.error || 'No se pudo guardar el cambio.');
+        }
+        ventana.addEventListener('show.bs.modal', () => {
+            mostrarError('');
+            const filtros = [...document.querySelectorAll('.chip-filtro')].map(c => c.textContent.replace(/\\s+/g, ' ').trim());
+            const pestana = new URLSearchParams(location.search).get('pestana') || 'tab-charts';
+            resumen.replaceChildren();
+            const titulo = document.createElement('div');
+            titulo.className = 'fw-semibold mb-1';
+            titulo.textContent = 'Pestaña: ' + (nombresPestana[pestana] || nombresPestana['tab-charts']);
+            const detalle = document.createElement('div');
+            detalle.className = 'text-muted';
+            detalle.textContent = filtros.length ? filtros.join(' · ') : 'Sin filtros';
+            resumen.append(titulo, detalle);
+            try { autor.value = localStorage.getItem('nombrePersona') || ''; } catch (e) {}
+        });
+        ventana.addEventListener('shown.bs.modal', () => nombre.focus());
+        form.addEventListener('submit', async e => {
+            e.preventDefault();
+            const texto = nombre.value.trim();
+            if (!texto) { mostrarError('Ponle un nombre a la vista.'); nombre.focus(); return; }
+            if (existentes().includes(texto.toLowerCase()) && !confirm(`Ya hay una vista llamada «${texto}». ¿Reemplazarla por la vista actual?`)) return;
+            try { localStorage.setItem('nombrePersona', autor.value.trim()); } catch (e) {}
+            const params = new URLSearchParams(location.search);
+            params.delete('msg');
+            try {
+                await enviar('guardar', {nombre: texto, autor: autor.value.trim(), consulta: params.toString()});
+                params.set('msg', `⭐ Vista «${texto}» guardada para el equipo.`);
+                window.location.replace('/?' + params.toString());
+            } catch (err) { mostrarError(err.message); }
+        });
+        document.addEventListener('click', async e => {
+            const boton = e.target.closest('.vista-eliminar');
+            if (!boton) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (!confirm(`¿Eliminar la vista «${boton.dataset.nombre}»? Dejará de verse para todo el equipo.`)) return;
+            try {
+                await enviar('eliminar', {id: boton.dataset.id});
+                boton.closest('li').remove();
+                const quedan = document.querySelectorAll('.vista-eliminar').length;
+                document.getElementById('vistasCuenta').textContent = quedan ? `(${quedan})` : '';
+                document.getElementById('vistasVacio').classList.toggle('d-none', quedan > 0);
+            } catch (err) { alert(err.message); }
+        });
+    })();
+    {% endif %}
 
     // Palabras excluidas de "Términos Frecuentes": cada usuario tiene su lista. Desde la tabla se recarga el
     // ranking al momento; en la ventana de Configuración los cambios se ven al cerrarla.
@@ -5604,6 +5953,9 @@ def index():
         destinos_data=destinos_data,
         iconos_destino=ICONOS_DESTINO,
         alerta_salud=alerta_salud,
+        vistas_guardadas=vistas_guardadas_de(usuario_actual()) if usuario_actual() in USUARIOS_VISTAS_GUARDADAS else [],
+        consulta_actual=limpiar_consulta_vista(request.query_string.decode()),
+        nombres_pestana=NOMBRES_PESTANA,
         msg=msg
     )
 
@@ -5757,6 +6109,76 @@ def editar_palabras_excluidas(accion):
         conn.close()
     return {'ok': True}
 
+@app.route('/estado_bots')
+@json_login_required
+def estado_bots():
+    if usuario_actual() not in USUARIOS_ESTADO_BOTS:
+        return {'ok': False, 'error': 'Esta función todavía no está disponible para tu usuario.'}, 403
+    ultimas = []
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                ultimas = ultimas_corridas(cur)
+        except Exception as e:
+            print(f"Error leyendo el estado de los bots: {e}")
+        finally:
+            conn.close()
+    en_curso = bots_en_curso()
+    por_fuente = {r['fuente']: r for r in ultimas}
+    bots = []
+    for fuente in ('Meta', 'Google'):
+        r = por_fuente.get(fuente, {})
+        bots.append({'fuente': fuente, 'fin': r['fin'].isoformat() if r.get('fin') else None,
+                     'etiqueta': r.get('etiqueta'), 'problema': bool(r.get('problema')),
+                     'en_curso': fuente in en_curso, 'inicio_en_curso': en_curso.get(fuente)})
+    return {'ok': True, 'bots': bots}
+
+@app.route('/vistas/<accion>', methods=['POST'])
+@json_login_required
+def editar_vistas(accion):
+    usuario = usuario_actual()
+    if usuario not in USUARIOS_VISTAS_GUARDADAS:
+        return {'ok': False, 'error': 'Esta función todavía no está disponible para tu usuario.'}, 403
+    if accion not in ('guardar', 'eliminar'):
+        abort(404)
+    datos = request.get_json(silent=True) or {}
+    if accion == 'guardar':
+        nombre = ' '.join(str(datos.get('nombre') or '').split())
+        autor = ' '.join(str(datos.get('autor') or '').split())[:40] or None
+        consulta = limpiar_consulta_vista(datos.get('consulta'))
+        if not 1 <= len(nombre) <= 60:
+            return {'ok': False, 'error': 'Ponle un nombre a la vista (hasta 60 caracteres).'}, 400
+        if len(consulta) > 2000:
+            return {'ok': False, 'error': 'La vista tiene demasiados filtros para guardarla.'}, 400
+    else:
+        try:
+            id_vista = int(datos.get('id'))
+        except (TypeError, ValueError):
+            return {'ok': False, 'error': 'Vista no válida.'}, 400
+    conn = get_db_connection()
+    if not conn:
+        return {'ok': False, 'error': 'No se pudo conectar a la base de datos.'}, 503
+    try:
+        with conn.cursor() as cur:
+            if accion == 'guardar':
+                cur.execute("SELECT COUNT(*) FROM vistas_guardadas WHERE usuario = %s AND nombre <> %s;", (usuario, nombre))
+                if cur.fetchone()[0] >= MAXIMO_VISTAS:
+                    return {'ok': False, 'error': f'Ya hay {MAXIMO_VISTAS} vistas guardadas; elimina alguna antes de guardar otra.'}, 400
+                cur.execute("""
+                    INSERT INTO vistas_guardadas (usuario, nombre, consulta, autor) VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (usuario, nombre) DO UPDATE SET consulta = EXCLUDED.consulta, autor = EXCLUDED.autor, fecha = CURRENT_TIMESTAMP;
+                """, (usuario, nombre, consulta, autor))
+            else:
+                cur.execute("DELETE FROM vistas_guardadas WHERE id = %s AND usuario = %s;", (id_vista, usuario))
+        conn.commit()
+    except Exception as e:
+        print(f"Error guardando la vista: {e}")
+        return {'ok': False, 'error': 'No se pudo guardar el cambio.'}, 500
+    finally:
+        conn.close()
+    return {'ok': True}
+
 @app.route('/productos/guardar', methods=['POST'])
 @json_login_required
 def guardar_categoria():
@@ -5882,6 +6304,7 @@ def lanzar_scraper():
             errores.append(f"{nombre}: {e}")
 
     if not errores:
+        _bots_en_curso['hasta'] = None  # el estado de la barra muestra enseguida que los bots están corriendo
         return redirect(url_for('index', msg="🚀 Scrapers de Meta y Google lanzados. Los datos se actualizarán en breve."))
     return redirect(url_for('index', msg="⚠️ Error al lanzar: " + " | ".join(errores)))
 
