@@ -86,6 +86,7 @@ def crear_tablas(cur):
             precios TEXT
         );
     """)
+    cur.execute("ALTER TABLE precios_capturas ADD COLUMN IF NOT EXISTS version VARCHAR(40);")
 
 
 def descargar_miniatura(url, timeout=15):

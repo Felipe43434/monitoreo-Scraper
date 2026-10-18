@@ -84,16 +84,22 @@ def leer_bloque(web, pagina):
     return anterior
 
 
-def guardar_captura(cur, pagina, bloque, precios):
-    # Devuelve "primera", "cambio" o None si el bloque es igual al de la última captura.
-    huella = hashlib.md5(bloque.encode("utf-8")).hexdigest()
+def buscar_version(texto):
+    # Número de versión que algunas páginas de producto muestran ("VERSIÓN 10.00.1ALX").
+    m = re.search(r"versi[oó]n\s+(\d+(?:\.\d+)+\w*)", texto, re.I)
+    return m.group(1) if m else None
+
+
+def guardar_captura(cur, pagina, bloque, precios, version=None):
+    # Devuelve "primera", "cambio" o None si el bloque (y la versión) es igual al de la última captura.
+    huella = hashlib.md5((bloque + (f"\nversión {version}" if version else "")).encode("utf-8")).hexdigest()
     cur.execute("SELECT huella FROM precios_capturas WHERE compania = %s AND url = %s ORDER BY fecha DESC LIMIT 1;",
                 (pagina["compania"], pagina["url"]))
     anterior = cur.fetchone()
     if anterior and anterior[0] == huella:
         return None
-    cur.execute("INSERT INTO precios_capturas (compania, url, texto, huella, precios) VALUES (%s, %s, %s, %s, %s);",
-                (pagina["compania"], pagina["url"], bloque, huella, json.dumps(precios, ensure_ascii=False)))
+    cur.execute("INSERT INTO precios_capturas (compania, url, texto, huella, precios, version) VALUES (%s, %s, %s, %s, %s, %s);",
+                (pagina["compania"], pagina["url"], bloque, huella, json.dumps(precios, ensure_ascii=False), version))
     return "cambio" if anterior else "primera"
 
 
@@ -129,7 +135,7 @@ def ejecutar():
                     if not precios:
                         raise ValueError("El bloque de precios no tiene montos.")
                     with conn.cursor() as cur:
-                        captura = guardar_captura(cur, pagina, bloque, precios)
+                        captura = guardar_captura(cur, pagina, bloque, precios, buscar_version(web.inner_text("body")))
                         marcar(cur, pagina, "ok")
                     conn.commit()
                     print(f"  {len(precios)} precios: " + " · ".join(p["etiqueta"] for p in precios)

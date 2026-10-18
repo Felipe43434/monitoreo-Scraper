@@ -732,7 +732,7 @@ def precios_web():
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT compania, url, revisado, estado, error FROM precios_paginas ORDER BY compania, url;")
             paginas = [dict(p) for p in cur.fetchall()]
-            cur.execute("SELECT compania, url, fecha, texto, precios FROM precios_capturas WHERE fecha >= NOW() - INTERVAL '365 days' ORDER BY fecha;")
+            cur.execute("SELECT compania, url, fecha, texto, precios, version FROM precios_capturas WHERE fecha >= NOW() - INTERVAL '365 days' ORDER BY fecha;")
             capturas = [dict(c) for c in cur.fetchall()]
     except Exception as e:
         print(f"Error leyendo los precios de los sitios web: {e}")
@@ -767,7 +767,10 @@ def precios_web():
                             for k in ahora.keys() - antes.keys()]
             encontrados += [{'tipo': 'quitado', 'plan': antes[k].get('plan') or 'Precio', 'texto': f"ya no aparece: {antes[k]['etiqueta']}", 'cambio': ''}
                             for k in antes.keys() - ahora.keys()]
-            if not encontrados:
+            if previa.get('version') and actual.get('version') and previa['version'] != actual['version']:
+                encontrados.append({'tipo': 'version', 'plan': 'Versión', 'texto': f"pasó de la versión {previa['version']} a la {actual['version']}", 'cambio': ''})
+            # La primera vez que se guarda la versión de una página no es un cambio de la página.
+            if not encontrados and not (actual.get('version') and not previa.get('version')):
                 encontrados = [{'tipo': 'texto', 'plan': 'Página de precios', 'texto': 'cambió el texto, pero no los montos', 'cambio': ''}]
             cambios += [dict(e, compania=compania, url=url, fecha=local(actual['fecha']).date(), visto=fecha_txt(actual['fecha'])) for e in encontrados]
     cambios.sort(key=lambda c: c['fecha'], reverse=True)
@@ -789,7 +792,7 @@ def precios_web():
     hoy = hoy_venezuela()
     destacados = [f"{c['compania']} {'subió' if c['tipo'] == 'sube' else 'bajó'} el precio de «{c['plan']}» en su web: {c['texto']} ({c['cambio']})."
                   for c in cambios if c['tipo'] in ('sube', 'baja') and c['fecha'] >= hoy - timedelta(days=6)][:3]
-    return {'empresas': list(empresas.values()), 'cambios': cambios[:12], 'destacados': destacados}
+    return {'empresas': list(empresas.values()), 'cambios': cambios[:12], 'cambios_todos': cambios, 'destacados': destacados}
 
 def precios_competencia(anuncios):
     hoy = hoy_venezuela()
@@ -817,7 +820,7 @@ def precios_competencia(anuncios):
     series = {}
     for g in (g for g in observaciones if g['tipo'] == 'precio'):
         series.setdefault((g['compania'], g['producto'], g['moneda'], g['periodo'], g['unidad']), []).append(g)
-    ultimos, variaciones = [], []
+    ultimos, variaciones, todos_los_cambios = [], [], []
     for (compania, producto, moneda, periodo, unidad), lista in series.items():
         ultima = max(g['ultima'] for g in lista)
         actuales = sorted({g['monto'] for g in lista if g['ultima'] == ultima})
@@ -831,13 +834,17 @@ def precios_competencia(anuncios):
             for f in {g['primera'], g['ultima']}:
                 por_fecha[f] = min(por_fecha.get(f, g['monto']), g['monto'])
         fechas = sorted(por_fecha)
-        cambios = [(f0, f1) for f0, f1 in zip(fechas, fechas[1:]) if por_fecha[f0] != por_fecha[f1]]
-        if cambios and compania != EMPRESA_PROPIA:
-            f0, f1 = cambios[-1]
+        cambios = []
+        for f0, f1 in zip(fechas, fechas[1:]):
             antes, ahora = por_fecha[f0], por_fecha[f1]
-            variaciones.append({'compania': compania, 'producto': producto, 'subio': ahora > antes, 'fecha': f1, 'visto': fecha_txt(f1),
+            if antes != ahora:
+                cambios.append({'compania': compania, 'producto': producto, 'subio': ahora > antes, 'fecha': f1, 'visto': fecha_txt(f1),
                                 'texto': f"{formato_monto(moneda, antes)} → {formato_monto(moneda, ahora)}{' ' + periodo if periodo else ''}{' ' + unidad if unidad else ''}",
-                                'cambio': f"{'+' if ahora > antes else '−'}{round(abs(ahora - antes) * 100 / antes)} %"})
+                                'cambio': f"{'+' if ahora > antes else '−'}{round(abs(ahora - antes) * 100 / antes)} %",
+                                'enlace': next((g['enlace'] for g in lista if g['ultima'] == f1 or g['primera'] == f1), '')})
+        todos_los_cambios += cambios
+        if cambios and compania != EMPRESA_PROPIA:
+            variaciones.append(cambios[-1])
     ultimos.sort(key=lambda u: (not u['propia'], u['compania'].lower(), -u['fecha'].toordinal()))
     variaciones.sort(key=lambda v: v['fecha'], reverse=True)
     promociones = [dict(g, primera_txt=fecha_txt(g['primera'])) for g in observaciones
@@ -846,7 +853,8 @@ def precios_competencia(anuncios):
                   for v in variaciones if v['fecha'] >= hoy - timedelta(days=6)][:3]
     historial = [dict(g, primera_txt=fecha_txt(g['primera']), ultima_txt=fecha_txt(g['ultima'])) for g in observaciones[:40]]
     return {'ultimos': ultimos, 'variaciones': variaciones[:8], 'promociones': promociones[:8], 'historial': historial,
-            'total': len(observaciones), 'destacados': destacados}
+            'total': len(observaciones), 'destacados': destacados, 'cambios_todos': todos_los_cambios,
+            'promociones_todas': [g for g in observaciones if g['tipo'] != 'precio']}
 
 def resumen_semanal(anuncios, registros, palabras_ignoradas):
     # Pestaña "Resumen Semanal": últimos 7 días frente a los 7 anteriores. Mercadeo ve campañas, formatos,
@@ -1178,6 +1186,85 @@ def presencia_propia(del_producto, registros, producto):
         comparacion = {'rival': rival, 'etiqueta': 'Principal competidor' if ranking[0] == EMPRESA_PROPIA else 'Líder',
                        'filas': list(zip(nombres, metricas(EMPRESA_PROPIA), metricas(rival)))}
     return {'estado': estado, 'titulo': titulo, 'texto': texto, 'grafico': grafico, 'ganadores': ganadores, 'comparacion': comparacion}
+
+# Línea de tiempo de la competencia (Beta; para Product Owner): lanzamientos y versiones nuevas que anuncian,
+# productos que empiezan o vuelven a anunciar, campañas grandes, promociones y cambios de precio (en anuncios
+# y en sus sitios web), con los filtros actuales.
+USUARIOS_LINEA_TIEMPO = (USUARIO_BETA,)
+TIPOS_EVENTO = {
+    'lanzamiento': {'nombre': 'Lanzamiento o versión nueva', 'icono': 'bi-rocket-takeoff'},
+    'version': {'nombre': 'Versión nueva en su web', 'icono': 'bi-bookmark-star'},
+    'producto': {'nombre': 'Empezó a anunciar un producto', 'icono': 'bi-megaphone'},
+    'vuelve': {'nombre': 'Volvió a anunciar un producto', 'icono': 'bi-arrow-counterclockwise'},
+    'campana': {'nombre': 'Campaña grande', 'icono': 'bi-collection'},
+    'promocion': {'nombre': 'Promoción', 'icono': 'bi-gift'},
+    'precio': {'nombre': 'Cambio de precio', 'icono': 'bi-tags'},
+}
+CAMPANA_GRANDE = 5  # variantes de un mismo anuncio
+DIAS_PAUSA_PRODUCTO = 60
+
+def linea_de_tiempo(anuncios, precios):
+    hoy = hoy_venezuela()
+    inicio = lambda a: a_fecha(parse_date_str(a.get('fecha_display')))
+    con_fecha = [a for a in anuncios if inicio(a) and (a.get('compania') or '').strip()]
+    eventos = []
+    def evento(tipo, fecha, compania, texto, enlace='', producto=''):
+        if fecha and fecha >= hoy - timedelta(days=365):
+            eventos.append({'tipo': tipo, 'fecha': fecha.isoformat(), 'fecha_txt': fecha.strftime('%d/%m/%Y'), 'compania': compania,
+                            'texto': texto, 'enlace': enlace or '', 'producto': producto, 'propia': compania == EMPRESA_PROPIA})
+    def resumen_texto(texto, largo=80):
+        texto = ' '.join(texto.split())
+        return texto if len(texto) <= largo else texto[:largo].rsplit(' ', 1)[0] + '…'
+
+    if con_fecha:
+        # Lo que había al empezar a guardar anuncios no cuenta como "empezó a anunciar": es el inicio del registro.
+        arranque = min(map(inicio, con_fecha)) + timedelta(days=14)
+        campanas = {}
+        for a in con_fecha:
+            campanas.setdefault(a['campana'], []).append(a)
+        for lista in campanas.values():
+            a = min(lista, key=inicio)
+            compania, texto = a['compania'].strip(), str(a.get('texto') or a.get('titulo') or '')
+            productos = ', '.join(sorted({p for x in lista for p in x.get('productos') or []}))
+            if PATRON_VERSION.search(texto):
+                evento('lanzamiento', inicio(a), compania, f"Anunció un lanzamiento o versión nueva: «{resumen_texto(texto)}»", a.get('link_individual'), productos)
+            if len(lista) >= CAMPANA_GRANDE:
+                evento('campana', inicio(a), compania, f"Lanzó una campaña de {len(lista)} anuncios: «{resumen_texto(texto, 60)}»", a.get('link_individual'), productos)
+        por_producto = {}
+        for a in con_fecha:
+            for p in a.get('productos') or []:
+                por_producto.setdefault((a['compania'].strip(), p), []).append(a)
+        for (compania, producto), lista in por_producto.items():
+            lista.sort(key=inicio)
+            if inicio(lista[0]) >= arranque:
+                evento('producto', inicio(lista[0]), compania, f"Empezó a anunciar {producto}.", lista[0].get('link_individual'), producto)
+            # Regresos: una campaña que empieza tras más de 2 meses sin ninguna activa de ese producto.
+            activo_hasta = None
+            for a in lista:
+                if activo_hasta and (inicio(a) - activo_hasta).days > DIAS_PAUSA_PRODUCTO:
+                    evento('vuelve', inicio(a), compania, f"Volvió a anunciar {producto} tras {(inicio(a) - activo_hasta).days} días sin campañas.",
+                           a.get('link_individual'), producto)
+                fin = a_fecha(fecha_fin_anuncio(a) or '') or (hoy if a.get('presente_en_meta') else inicio(a))
+                activo_hasta = max(activo_hasta or fin, fin)
+
+    if precios:
+        for c in precios.get('cambios_todos', []):
+            evento('precio', c['fecha'], c['compania'], f"{'Subió' if c['subio'] else 'Bajó'} su precio en anuncios de {c['producto']}: {c['texto']} ({c['cambio']}).",
+                   c.get('enlace'), c['producto'])
+        for g in precios.get('promociones_todas', []):
+            evento('promocion', g['primera'], g['compania'], f"Promoción en anuncios: {g['etiqueta']}{' en ' + g['producto'] if g['producto'] != 'General' else ''}.",
+                   g.get('enlace'), '' if g['producto'] == 'General' else g['producto'])
+        for c in (precios.get('web') or {}).get('cambios_todos', []):
+            if c['tipo'] == 'version':
+                evento('version', c['fecha'], c['compania'], f"Su web {c['texto']}.", c['url'])
+            elif c['tipo'] in ('sube', 'baja', 'nuevo', 'quitado'):
+                verbo = {'sube': 'Subió', 'baja': 'Bajó'}.get(c['tipo'])
+                evento('precio', c['fecha'], c['compania'], (f"{verbo} en su web el precio de «{c['plan']}»: {c['texto']} ({c['cambio']})." if verbo
+                                                              else f"En su web, «{c['plan']}»: {c['texto']}."), c['url'])
+    eventos.sort(key=lambda e: e['fecha'], reverse=True)
+    companias = sorted({e['compania'] for e in eventos}, key=lambda c: (c != EMPRESA_PROPIA, c.lower()))
+    tipos = {t: dict(d, total=sum(1 for e in eventos if e['tipo'] == t)) for t, d in TIPOS_EVENTO.items()}
+    return {'eventos': eventos, 'companias': companias, 'tipos': tipos, 'hoy': hoy.isoformat()}
 
 def estadisticas_por_empresa(anuncios):
     # Tabla "Empresas Monitoreadas": se cuenta sobre los anuncios ya filtrados para que
@@ -2097,6 +2184,14 @@ HTML_TEMPLATE = """
             .diseno-v2 .navbar-brand { font-size: 1rem; margin-right: 0; }
             .diseno-v2 .navbar-brand > i { display: none; }
         }
+        /* Línea de tiempo (Beta) */
+        .chip-tipo { display: inline-flex; align-items: center; gap: .25rem; font-size: .8rem; padding: .25rem .6rem; border: 1px solid var(--border-color); border-radius: 999px; cursor: pointer; }
+        .linea-lista .linea-mes { font-size: .75rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--bs-secondary-color); margin: .9rem 0 .35rem; }
+        .linea-lista .linea-mes:first-child { margin-top: 0; }
+        .linea-lista .linea-evento { display: grid; grid-template-columns: 5.5rem 1.4rem 1fr; gap: .5rem; align-items: baseline; padding: .35rem 0; border-bottom: 1px dashed var(--border-color); font-size: .88rem; }
+        .linea-lista .linea-evento.propia { background: rgba(37, 99, 235, .05); }
+        @media (max-width: 576px) { .linea-lista .linea-evento { grid-template-columns: 1.4rem 1fr; } .linea-lista .linea-fecha { grid-column: 1 / -1; } }
+        @media (prefers-reduced-motion: no-preference) { .linea-lista .linea-evento { animation: entrar-suave .3s var(--ease-out) backwards; } }
         /* Precios de la competencia (Beta) */
         .tarjeta-precios .fila-propia td { background: rgba(37, 99, 235, .06); }
         .tarjeta-precios details summary { cursor: pointer; }
@@ -2908,7 +3003,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    {% set pestanas_validas = ['tab-charts', 'tab-ads', 'tab-winning', 'tab-retirados', 'tab-new', 'tab-keywords', 'tab-resumen'] %}
+    {% set pestanas_validas = ['tab-charts', 'tab-ads', 'tab-winning', 'tab-retirados', 'tab-new', 'tab-keywords', 'tab-resumen', 'tab-linea'] %}
     {% set pestana_activa = request.args.get('pestana') if request.args.get('pestana') in pestanas_validas else 'tab-charts' %}
     {# Miniatura del anuncio: clic = imagen completa en una ventana; se usa en todas las tablas de anuncios. #}
     {% macro celda_miniatura(ad) %}
@@ -3257,6 +3352,13 @@ HTML_TEMPLATE = """
         <li class="nav-item">
             <button class="nav-link {% if pestana_activa == 'tab-resumen' %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-resumen" type="button">
                 <i class="bi bi-journal-text"></i> Resumen Semanal {{ nuevo('resumen_semanal') }}
+            </button>
+        </li>
+        {% endif %}
+        {% if linea %}
+        <li class="nav-item">
+            <button class="nav-link {% if pestana_activa == 'tab-linea' %}active {% endif %}fw-semibold" data-bs-toggle="tab" data-bs-target="#tab-linea" type="button">
+                <i class="bi bi-calendar-range"></i> Línea de Tiempo <span class="badge bg-warning text-dark ms-1">BETA</span>
             </button>
         </li>
         {% endif %}
@@ -4119,6 +4221,39 @@ HTML_TEMPLATE = """
                 </div>
                 {% endif %}
             </div>
+        </div>
+        {% endif %}
+
+        {% if linea %}
+        <!-- Panel 8: Línea de tiempo de la competencia (Beta). -->
+        <div class="tab-pane fade{% if pestana_activa == 'tab-linea' %} show active{% endif %}" id="tab-linea">
+            <div class="card-custom p-3 mb-3">
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1">
+                    <h6 class="fw-bold mb-0"><i class="bi bi-calendar-range"></i> Línea de tiempo de la competencia <span class="badge bg-warning text-dark">BETA</span></h6>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Período de la línea de tiempo" id="lineaPeriodo">
+                        <button type="button" class="btn btn-outline-secondary" data-meses="3">3 meses</button>
+                        <button type="button" class="btn btn-outline-secondary active" data-meses="6" aria-pressed="true">6 meses</button>
+                        <button type="button" class="btn btn-outline-secondary" data-meses="12">12 meses</button>
+                    </div>
+                </div>
+                <p class="small text-muted mb-2">Lanzamientos, productos nuevos, regresos, campañas grandes, promociones, cambios de precio y versiones de la competencia (y de Gálac), con los filtros actuales. Clic en un punto para abrir el anuncio o la página.</p>
+                <div class="d-flex flex-wrap gap-2 mb-3" id="lineaTipos">
+                    {% for clave, t in linea.tipos.items() if t.total %}
+                    <label class="chip-tipo"><input type="checkbox" class="form-check-input me-1" value="{{ clave }}" checked> <i class="bi {{ t.icono }}" aria-hidden="true"></i> {{ t.nombre }} <span class="text-muted">({{ t.total }})</span></label>
+                    {% endfor %}
+                </div>
+                {% if linea.eventos %}
+                <div class="position-relative" style="height: {{ 70 + 38 * linea.companias|length }}px;"><canvas id="lineaTiempoChart"></canvas></div>
+                {% else %}
+                <p class="small text-muted mb-0">Todavía no hay eventos con los filtros actuales.</p>
+                {% endif %}
+            </div>
+            {% if linea.eventos %}
+            <div class="card-custom p-3">
+                <h6 class="fw-bold mb-2"><i class="bi bi-list-ul"></i> Eventos <span class="small fw-normal text-muted" id="lineaCuenta"></span></h6>
+                <div id="lineaLista" class="linea-lista"></div>
+            </div>
+            {% endif %}
         </div>
         {% endif %}
 
@@ -5295,6 +5430,130 @@ HTML_TEMPLATE = """
             },
         });
     });
+
+    // Línea de tiempo de la competencia (Beta): un punto por evento (fila = empresa, forma y color = tipo) y la
+    // lista por mes debajo. Se dibuja al abrir la pestaña (oculta mediría 0 px) y se filtra por tipo y período.
+    (function lineaDeTiempo() {
+        const lienzo = document.getElementById('lineaTiempoChart');
+        if (!lienzo) return;
+        const datos = {{ linea|tojson }};
+        const estilos = {
+            lanzamiento: ['#ea580c', 'triangle'], version: ['#7c3aed', 'star'], producto: ['#2563eb', 'circle'], vuelve: ['#0891b2', 'rect'],
+            campana: ['#64748b', 'rectRounded'], promocion: ['#db2777', 'crossRot'], precio: ['#16a34a', 'rectRot'],
+        };
+        const dia = 86400000;
+        const hoy = Date.parse(datos.hoy);
+        let meses = 6, grafico = null;
+        const tiposActivos = () => new Set([...document.querySelectorAll('#lineaTipos input:checked')].map(c => c.value));
+        const visibles = () => {
+            const desde = hoy - meses * 30.5 * dia, tipos = tiposActivos();
+            return datos.eventos.filter(e => tipos.has(e.tipo) && Date.parse(e.fecha) >= desde);
+        };
+        const fechaCorta = t => new Date(t).toLocaleDateString('es-VE', { month: 'short', year: '2-digit', timeZone: 'UTC' });
+        function dibujar() {
+            const eventos = visibles();
+            const series = Object.keys(datos.tipos).filter(t => datos.tipos[t].total).map(t => ({
+                label: datos.tipos[t].nombre, tipo: t, data: eventos.filter(e => e.tipo === t).map(e => ({ x: Date.parse(e.fecha), y: e.compania, ev: e })),
+                pointStyle: estilos[t][1], backgroundColor: estilos[t][0] + 'cc', borderColor: estilos[t][0], pointRadius: 7, pointHoverRadius: 10,
+            }));
+            if (grafico) {
+                grafico.data.datasets = series;
+                grafico.options.scales.x.min = hoy - meses * 30.5 * dia;
+                grafico.update();
+            } else {
+                grafico = new Chart(lienzo, {
+                    type: 'scatter',
+                    data: { datasets: series },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        scales: {
+                            x: {
+                                type: 'linear', min: hoy - meses * 30.5 * dia, max: hoy + 3 * dia, ticks: { callback: v => fechaCorta(v) },
+                                // Una marca el día 1 de cada mes (las automáticas caen en cualquier día y repiten meses).
+                                afterBuildTicks: eje => {
+                                    const marcas = [], fecha = new Date(eje.min);
+                                    fecha.setUTCDate(1); fecha.setUTCHours(0, 0, 0, 0);
+                                    for (fecha.setUTCMonth(fecha.getUTCMonth() + 1); fecha.getTime() <= eje.max; fecha.setUTCMonth(fecha.getUTCMonth() + 1)) marcas.push({ value: fecha.getTime() });
+                                    eje.ticks = marcas;
+                                },
+                            },
+                            y: { type: 'category', labels: datos.companias, offset: true, grid: { display: false } },
+                        },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: { callbacks: { title: c => c[0].raw.ev.compania + ' · ' + c[0].raw.ev.fecha_txt, label: c => c.raw.ev.texto } },
+                        },
+                        onClick: (evt, puntos) => {
+                            const ev = puntos[0] && grafico.data.datasets[puntos[0].datasetIndex].data[puntos[0].index].ev;
+                            if (ev && ev.enlace) window.open(ev.enlace, '_blank', 'noopener');
+                        },
+                        onHover: (evt, puntos) => { lienzo.style.cursor = puntos.length ? 'pointer' : 'default'; },
+                    },
+                });
+            }
+            listar(eventos);
+        }
+        function listar(eventos) {
+            const lista = document.getElementById('lineaLista');
+            document.getElementById('lineaCuenta').textContent = `(${eventos.length})`;
+            lista.replaceChildren();
+            let mesActual = '';
+            eventos.forEach(e => {
+                const mes = new Date(e.fecha).toLocaleDateString('es-VE', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+                if (mes !== mesActual) {
+                    mesActual = mes;
+                    const titulo = document.createElement('div');
+                    titulo.className = 'linea-mes';
+                    titulo.textContent = mes;
+                    lista.appendChild(titulo);
+                }
+                const fila = document.createElement('div');
+                fila.className = 'linea-evento' + (e.propia ? ' propia' : '');
+                const fecha = document.createElement('span');
+                fecha.className = 'linea-fecha text-muted small';
+                fecha.textContent = e.fecha_txt;
+                const icono = document.createElement('i');
+                icono.className = 'bi ' + datos.tipos[e.tipo].icono;
+                icono.style.color = estilos[e.tipo][0];
+                icono.title = datos.tipos[e.tipo].nombre;
+                icono.setAttribute('aria-label', datos.tipos[e.tipo].nombre);
+                const texto = document.createElement('span');
+                const empresa = document.createElement('strong');
+                empresa.textContent = e.compania + ': ';
+                texto.append(empresa, e.texto);
+                if (e.producto && !e.texto.includes(e.producto)) {
+                    const etiqueta = document.createElement('span');
+                    etiqueta.className = 'badge bg-secondary-subtle text-secondary-emphasis fw-normal ms-1';
+                    etiqueta.textContent = e.producto;
+                    texto.append(' ', etiqueta);
+                }
+                if (e.enlace) {
+                    const enlace = document.createElement('a');
+                    enlace.href = e.enlace; enlace.target = '_blank'; enlace.rel = 'noopener';
+                    enlace.className = 'ms-1 text-nowrap';
+                    enlace.textContent = 'Ver';
+                    texto.append(' ', enlace);
+                }
+                fila.append(fecha, icono, texto);
+                lista.appendChild(fila);
+            });
+            if (!eventos.length) lista.innerHTML = '<p class="small text-muted mb-0">No hay eventos de esos tipos en este período.</p>';
+        }
+        document.getElementById('lineaTipos').addEventListener('change', () => grafico && dibujar());
+        document.getElementById('lineaPeriodo').addEventListener('click', e => {
+            const boton = e.target.closest('[data-meses]');
+            if (!boton) return;
+            meses = Number(boton.dataset.meses);
+            document.querySelectorAll('#lineaPeriodo [data-meses]').forEach(b => {
+                b.classList.toggle('active', b === boton);
+                b.setAttribute('aria-pressed', b === boton ? 'true' : 'false');
+            });
+            if (grafico) dibujar();
+        });
+        const pestana = document.querySelector('[data-bs-target="#tab-linea"]');
+        if (document.getElementById('tab-linea').classList.contains('active')) dibujar();
+        else pestana.addEventListener('shown.bs.tab', () => { if (!grafico) dibujar(); });
+    })();
 
     // Evolución en el tiempo: la tarjeta de "Anuncios activos" también muestra la participación semanal,
     // que se elige con un selector; el gráfico se crea al mostrarlo por primera vez (oculto mediría 0 px).
@@ -6480,6 +6739,9 @@ def index():
         resumen['producto']['precios'] = precios_competencia(anuncios)
         resumen['producto']['precios']['web'] = precios_web()
         resumen['producto']['destacados'][1:1] = (resumen['producto']['precios']['web'] or {}).get('destacados', []) + resumen['producto']['precios']['destacados']
+    linea = None
+    if usuario_actual() in USUARIOS_LINEA_TIEMPO:
+        linea = linea_de_tiempo(anuncios, resumen['producto'].get('precios') if resumen else None)
 
     keywords_chart_data = {
         "labels": [p[0].capitalize() for p in top_palabras],
@@ -6542,6 +6804,7 @@ def index():
         campana_nombre=campana_nombre,
         participacion_data=participacion_data,
         radar=radar,
+        linea=linea,
         resumen=resumen,
         rol_resumen='producto' if usuario_actual() == 'product_owner' else 'mercadeo',
         elige_rol_resumen=usuario_actual() in (USUARIO_ADMIN, USUARIO_BETA),
