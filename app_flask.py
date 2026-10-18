@@ -681,19 +681,25 @@ def a_fecha(texto):
     except (TypeError, ValueError):
         return None
 
-def reparto_participacion(registros, desde, hasta):
-    # Mismo cálculo que la tarjeta "Participación Publicitaria": días activos de cada campaña dentro de
-    # [desde, hasta], ponderados; las variantes de una campaña cuentan una vez. Devuelve % por empresa.
+def dias_activos(registros, desde, hasta, ponderado=True):
+    # Días activos de cada empresa dentro de [desde, hasta]; las variantes de una campaña cuentan una vez.
+    # Sin ponderar, dividido por los días del período, es el promedio de campañas activas a la vez.
     grupos = {}
     for r in registros:
         ini = max(a_fecha(r['i']), desde)
         fin = min(a_fecha(r['f']) or hasta, hasta) if r['f'] else hasta
         dias = (fin - ini).days + 1
         if dias > 0:
-            grupos[r['g']] = (r['c'], max(grupos.get(r['g'], (None, 0))[1], dias * r['p']))
+            grupos[r['g']] = (r['c'], max(grupos.get(r['g'], (None, 0))[1], dias * (r['p'] if ponderado else 1)))
     por_compania = Counter()
     for compania, valor in grupos.values():
         por_compania[compania] += valor
+    return por_compania
+
+def reparto_participacion(registros, desde, hasta):
+    # Mismo cálculo que la tarjeta "Participación Publicitaria": días activos ponderados de cada campaña
+    # dentro de [desde, hasta]. Devuelve % por empresa.
+    por_compania = dias_activos(registros, desde, hasta)
     total = sum(por_compania.values())
     return {c: round(v * 100 / total, 1) for c, v in por_compania.items()} if total else {}
 
@@ -846,6 +852,121 @@ def resumen_semanal(anuncios, registros, palabras_ignoradas):
         'producto': {'destacados': destacados_producto, 'columnas': columnas, 'matriz': matriz, 'huecos': huecos,
                      'nuevos_productos': nuevos_productos, 'propios': propios},
     }
+
+# Radar de producto (Beta; pensado para Product Owner): al filtrar por un producto se ven alertas de cada
+# competidor (empezó a anunciarlo, nueva versión, temas nuevos, subidas y bajadas) y tendencias del
+# producto. Compara las últimas 2 semanas con las 2 anteriores, sobre los anuncios de los filtros actuales.
+USUARIOS_RADAR_PRODUCTO = (USUARIO_BETA,)
+PATRON_VERSION = re.compile(r'nuevas? versi[oó]n|versi[oó]n\s+\d|\bv\.?\s?\d+(?:\.\d+)+\b|ya (?:est[aá] )?disponible|lanzamos|'
+                            r'lanzamiento|reci[eé]n lanzad[oa]|nuevas? (?:funcionalidad|funci[oó]n|m[oó]dulo)(?:es|s)?\b', re.I)
+ORDINALES = {2: 'segunda', 3: 'tercera', 4: 'cuarta', 5: 'quinta', 6: 'sexta', 7: 'séptima'}
+ORDEN_ALERTAS = ('version', 'nuevo', 'vuelve', 'tema', 'sube', 'baja')
+MAXIMO_ALERTAS_RADAR = 10
+
+def radar_producto(anuncios, producto, mercado_completo):
+    hoy = hoy_venezuela()
+    desde, desde_previo = hoy - timedelta(days=13), hoy - timedelta(days=27)
+    del_producto = [a for a in anuncios if producto in (a.get('productos') or [])]
+    if not del_producto:
+        return None
+    inicio = lambda a: a_fecha(parse_date_str(a.get('fecha_display')))
+    registros = registros_participacion(del_producto)['registros']
+    competencia = [r for r in registros if r['c'] != EMPRESA_PROPIA]
+    promedio = lambda d, h, regs=competencia: dias_activos(regs, d, h, ponderado=False)
+    recientes = promedio(desde, hoy)
+    previos = promedio(desde_previo, desde - timedelta(days=1))
+    antes_de_ahora = promedio(desde - timedelta(days=60), desde - timedelta(days=1))
+    plural = lambda n, palabra: f"{n} {palabra}{'s' if n != 1 else ''}"
+    redondo = lambda x: f"{x:.1f}".replace('.', ',').replace(',0', '')
+
+    por_compania = {}
+    for a in del_producto:
+        if (compania := (a.get('compania') or '').strip()) and compania != EMPRESA_PROPIA and inicio(a):
+            por_compania.setdefault(compania, []).append(a)
+    alertas = []
+    for compania, lista in sorted(por_compania.items()):
+        nuevos = sorted((a for a in lista if inicio(a) >= desde), key=inicio, reverse=True)
+        viejos = [a for a in lista if inicio(a) < desde]
+        campanas = len({a['campana'] for a in nuevos})
+        alerta = lambda tipo, texto, detalle='', enlace=None: alertas.append(
+            {'tipo': tipo, 'compania': compania, 'texto': texto, 'detalle': detalle, 'enlace': enlace})
+        if nuevos and not viejos:
+            alerta('nuevo', f"no anunciaba {producto} y ahora sí: {plural(campanas, 'campaña')} desde el {min(map(inicio, nuevos)):%d/%m}.")
+        elif nuevos and not antes_de_ahora.get(compania):
+            alerta('vuelve', f"volvió a anunciar {producto} tras más de 2 meses sin campañas de este producto ({plural(campanas, 'campaña')} nueva{'s' if campanas != 1 else ''}).")
+        for a in nuevos:
+            texto = str(a.get('texto') or a.get('titulo') or '')
+            if (m := PATRON_VERSION.search(texto)):
+                # Fragmento alrededor de lo detectado, cortado en palabras completas.
+                ini, fin = max(0, m.start() - 45), min(len(texto), m.end() + 55)
+                palabras = texto[ini:fin].split()
+                if fin < len(texto) and len(palabras) > 1:
+                    palabras = palabras[:-1]
+                if ini > 0 and len(palabras) > 1:
+                    palabras = palabras[1:]
+                fragmento = ('…' if ini > 0 else '') + ' '.join(palabras) + ('…' if fin < len(texto) else '')
+                alerta('version', f"se detectó una nueva versión o lanzamiento: «{fragmento}»", f"Anuncio del {inicio(a):%d/%m}", a.get('link_individual'))
+                break
+        if nuevos and viejos:
+            temas_antes = {p for a in viejos for p in a.get('productos') or []}
+            for tema in sorted({p for a in nuevos for p in a.get('productos') or []} - temas_antes - {producto})[:2]:
+                alerta('tema', f"comenzó a promocionar {tema} en sus anuncios de {producto}.")
+        ahora, antes = recientes.get(compania, 0) / 14, previos.get(compania, 0) / 14
+        detalle = f"Campañas activas en promedio: {redondo(antes)} en las 2 semanas anteriores y {redondo(ahora)} en las últimas 2."
+        if antes >= 0.2 and ahora >= 0.5 and ahora >= antes * 1.5:
+            alerta('sube', f"aumentó {round((ahora - antes) * 100 / antes)} % su publicidad de {producto}.", detalle)
+        elif antes >= 0.5 and ahora <= antes * 0.5:
+            alerta('baja', f"redujo {round((antes - ahora) * 100 / antes)} % su publicidad de {producto}.", detalle)
+    alertas.sort(key=lambda x: ORDEN_ALERTAS.index(x['tipo']))
+
+    tendencias = []
+    tendencia = lambda icono, texto: tendencias.append({'icono': icono, 'texto': texto})
+    # Temas (otros productos) que más aparecen en las campañas de la competencia activas en los últimos 30 días.
+    temas_por_campana = {}
+    for a in del_producto:
+        temas_por_campana.setdefault(a['campana'], set()).update(a.get('productos') or [])
+    hace_30 = hoy - timedelta(days=29)
+    activas = {r['g'] for r in competencia if a_fecha(r['i']) <= hoy and (not r['f'] or a_fecha(r['f']) >= hace_30)}
+    temas = Counter(t for g in activas for t in temas_por_campana.get(g, ()) if t != producto)
+    for tema, n in temas.most_common(2):
+        if len(activas) >= 4 and n >= 2 and n * 4 >= len(activas):
+            tendencia('bi-tags', f"{tema} aparece en el {round(n * 100 / len(activas))} % de las campañas activas de la competencia en {producto} ({n} de {len(activas)}).")
+    # Rachas semanales de la competencia (promedio de campañas activas por semana; ±5 % se considera estable).
+    semanas = [sum(promedio(hoy - timedelta(days=7 * k + 6), hoy - timedelta(days=7 * k)).values()) / 7 for k in range(7, -1, -1)]
+    def racha(sube):
+        n = 0
+        for previa, actual in zip(reversed(semanas[:-1]), reversed(semanas[1:])):
+            if (actual > previa * 1.05) if sube else (actual < previa * 0.95):
+                n += 1
+            else:
+                break
+        return n
+    for sube, verbo, icono in ((True, 'crece', 'bi-graph-up-arrow'), (False, 'baja', 'bi-graph-down-arrow')):
+        n = racha(sube)
+        if n >= 2:
+            tendencia(icono, f"La publicidad de la competencia en {producto} {verbo} por {ORDINALES[min(n, 7)]} semana consecutiva "
+                             f"({redondo(semanas[-1 - n])} → {redondo(semanas[-1])} campañas activas en promedio).")
+        elif n == 1 and not sube and not semanas[-1]:
+            tendencia(icono, f"La competencia no tuvo publicidad activa de {producto} esta semana (la anterior: {redondo(semanas[-2])} campañas activas en promedio).")
+        elif n == 1 and semanas[-2] and abs(semanas[-1] - semanas[-2]) >= semanas[-2] * 0.3:
+            tendencia(icono, f"La publicidad de la competencia en {producto} {'subió' if sube else 'bajó'} "
+                             f"{round(abs(semanas[-1] - semanas[-2]) * 100 / semanas[-2])} % esta semana frente a la anterior.")
+    if not any(t['icono'].startswith('bi-graph') for t in tendencias) and semanas[-1]:
+        tendencia('bi-dash-lg', f"La publicidad de la competencia en {producto} se mantiene estable (unas {redondo(semanas[-1])} campañas activas en promedio esta semana).")
+    # Gálac frente a la competencia en las últimas 2 semanas (solo sin filtro de compañías: si no, no se ve todo el mercado).
+    reparto = reparto_participacion(registros, desde, hoy)
+    competidores = sorted((c for c in reparto if c != EMPRESA_PROPIA), key=lambda c: -reparto[c])
+    if mercado_completo and competidores and not reparto.get(EMPRESA_PROPIA):
+        tendencia('bi-exclamation-diamond', f"{EMPRESA_PROPIA} no tiene actividad en {producto}; {len(competidores)} competidor{'es' if len(competidores) != 1 else ''} "
+                                            f"sí: {', '.join(competidores[:4])}{'…' if len(competidores) > 4 else ''}.")
+    elif mercado_completo and reparto.get(EMPRESA_PROPIA):
+        ranking = sorted(reparto, key=lambda c: -reparto[c])
+        tendencia('bi-pie-chart', f"{EMPRESA_PROPIA} tiene el {redondo(reparto[EMPRESA_PROPIA])} % de la publicidad de {producto} "
+                                  f"(puesto {ranking.index(EMPRESA_PROPIA) + 1} de {len(ranking)}).")
+    if mercado_completo and competidores and reparto[competidores[0]] >= 30:
+        tendencia('bi-trophy', f"{competidores[0]} lidera {producto} con el {redondo(reparto[competidores[0]])} % de la publicidad de las últimas 2 semanas.")
+    return {'producto': producto, 'desde': desde.strftime('%d/%m'), 'hasta': hoy.strftime('%d/%m'),
+            'alertas': alertas[:MAXIMO_ALERTAS_RADAR], 'mas_alertas': max(0, len(alertas) - MAXIMO_ALERTAS_RADAR), 'tendencias': tendencias}
 
 def estadisticas_por_empresa(anuncios):
     # Tabla "Empresas Monitoreadas": se cuenta sobre los anuncios ya filtrados para que
@@ -1764,6 +1885,34 @@ HTML_TEMPLATE = """
         @media (max-width: 420px) {
             .diseno-v2 .navbar-brand { font-size: 1rem; margin-right: 0; }
             .diseno-v2 .navbar-brand > i { display: none; }
+        }
+        /* Radar de producto (Beta) */
+        .radar-producto { border-left: 4px solid var(--bs-primary); }
+        .radar-subtitulo { font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--bs-secondary-color); margin-bottom: .6rem; }
+        .radar-lista li { display: flex; gap: .55rem; align-items: baseline; padding: .35rem 0; font-size: .9rem; border-bottom: 1px dashed var(--border-color); }
+        .radar-lista li:last-child { border-bottom: 0; }
+        .radar-lista li > .bi { flex-shrink: 0; color: var(--bs-primary); }
+        .radar-lista .radar-version > .bi, .radar-lista .radar-nuevo > .bi { color: #c2410c; }
+        .radar-lista .radar-sube > .bi { color: #15803d; }
+        .radar-lista .radar-baja > .bi { color: #b91c1c; }
+        [data-bs-theme="dark"] .radar-lista .radar-version > .bi, [data-bs-theme="dark"] .radar-lista .radar-nuevo > .bi { color: #fb923c; }
+        [data-bs-theme="dark"] .radar-lista .radar-sube > .bi { color: #4ade80; }
+        [data-bs-theme="dark"] .radar-lista .radar-baja > .bi { color: #f87171; }
+        /* Animaciones del radar y del botón de datos nuevos: la tarjeta entra como las demás, las líneas
+           aparecen escalonadas, el ícono del radar da una vuelta y las alertas de lanzamiento laten dos veces. */
+        @keyframes radar-barrido { from { rotate: -360deg; } }
+        @keyframes icono-latido { 50% { scale: 1.3; } }
+        @media (prefers-reduced-motion: no-preference) {
+            .diseno-v2 .radar-producto { animation: aparecer .6s var(--ease-out) 230ms backwards; }
+            .radar-producto h2 .bi-radar { display: inline-block; animation: radar-barrido 1.1s var(--ease-out) .35s backwards; }
+            .radar-lista li { animation: entrar-suave .35s var(--ease-out) backwards; animation-delay: 420ms; }
+            .radar-lista li:nth-child(2) { animation-delay: 470ms; }
+            .radar-lista li:nth-child(3) { animation-delay: 520ms; }
+            .radar-lista li:nth-child(4) { animation-delay: 570ms; }
+            .radar-lista li:nth-child(5) { animation-delay: 620ms; }
+            .radar-lista li:nth-child(n+6) { animation-delay: 670ms; }
+            .radar-lista .radar-version > .bi, .radar-lista .radar-nuevo > .bi { display: inline-block; animation: icono-latido .5s ease-in-out 1s 2; }
+            #datosNuevos.d-flex { animation: aviso-entrar .5s var(--ease-out) backwards, aviso-latido 1.6s ease-out .5s 2; }
         }
         /* Estado de los bots y vistas guardadas (Beta) */
         .estado-bots { font-size: .75rem; }
@@ -2757,6 +2906,45 @@ HTML_TEMPLATE = """
         </div>
         {% endif %}
     </div>
+
+    {% if radar %}
+    <!-- Radar de producto (Beta): aparece al filtrar por un producto. -->
+    {% set iconos_alerta = {'version': 'bi-rocket-takeoff', 'nuevo': 'bi-plus-circle', 'vuelve': 'bi-arrow-counterclockwise', 'tema': 'bi-lightbulb', 'sube': 'bi-graph-up-arrow', 'baja': 'bi-graph-down-arrow'} %}
+    {% for r in radar %}
+    <section class="card-custom p-3 mb-4 radar-producto" aria-labelledby="radarTitulo{{ loop.index }}">
+        <div class="d-flex flex-wrap align-items-baseline gap-2 mb-3">
+            <h2 class="h6 fw-bold mb-0" id="radarTitulo{{ loop.index }}"><i class="bi bi-radar text-primary" aria-hidden="true"></i> Radar de producto: {{ r.producto }} <span class="badge bg-warning text-dark">BETA</span></h2>
+            <span class="small text-muted">Últimas 2 semanas ({{ r.desde }} – {{ r.hasta }}) frente a las 2 anteriores, con los filtros actuales</span>
+        </div>
+        <div class="row g-4">
+            <div class="col-lg-6">
+                <h3 class="radar-subtitulo">Alertas de la competencia</h3>
+                <ul class="list-unstyled mb-0 radar-lista">
+                    {% for al in r.alertas %}
+                    <li class="radar-{{ al.tipo }}"{% if al.detalle %} title="{{ al.detalle }}"{% endif %}>
+                        <i class="bi {{ iconos_alerta[al.tipo] }}" aria-hidden="true"></i>
+                        <span><a class="fw-semibold text-decoration-none" href="{{ url_con_filtros(compania=al.compania, pestana='tab-ads') }}">{{ al.compania }}</a>: {{ al.texto }}{% if al.enlace %} <a href="{{ al.enlace }}" target="_blank" rel="noopener" class="text-nowrap">Ver anuncio</a>{% endif %}</span>
+                    </li>
+                    {% else %}
+                    <li class="text-muted small">Sin cambios destacados de la competencia en este período.</li>
+                    {% endfor %}
+                    {% if r.mas_alertas %}<li class="text-muted small">Y {{ r.mas_alertas }} alerta{{ 's' if r.mas_alertas != 1 }} más de menor prioridad.</li>{% endif %}
+                </ul>
+            </div>
+            <div class="col-lg-6">
+                <h3 class="radar-subtitulo">Tendencias</h3>
+                <ul class="list-unstyled mb-0 radar-lista">
+                    {% for t in r.tendencias %}
+                    <li><i class="bi {{ t.icono }}" aria-hidden="true"></i><span>{{ t.texto }}</span></li>
+                    {% else %}
+                    <li class="text-muted small">Todavía no hay datos suficientes para ver tendencias de este producto.</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </section>
+    {% endfor %}
+    {% endif %}
 
     <!-- Pestañas -->
 <div class="d-flex flex-wrap align-items-center gap-2 mb-3 barra-pestanas">
@@ -5885,6 +6073,9 @@ def index():
     comparativa = comparativa_empresas(anuncios, palabras_ignoradas)
 
     participacion_data = registros_participacion(anuncios)
+    radar = []
+    if usuario_actual() in USUARIOS_RADAR_PRODUCTO and not campana_sel:
+        radar = [r for p in productos_sel[:3] if p != SIN_CLASIFICAR and (r := radar_producto(anuncios, p, not companias_sel))]
     resumen = resumen_semanal(anuncios, participacion_data['registros'], palabras_ignoradas)
 
     keywords_chart_data = {
@@ -5947,6 +6138,7 @@ def index():
         comparativa=comparativa,
         campana_nombre=campana_nombre,
         participacion_data=participacion_data,
+        radar=radar,
         resumen=resumen,
         rol_resumen='producto' if usuario_actual() == 'product_owner' else 'mercadeo',
         elige_rol_resumen=usuario_actual() in (USUARIO_ADMIN, USUARIO_BETA),
