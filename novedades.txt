@@ -1,0 +1,10 @@
+# Fuentes que revisa el bot de novedades (monitoreo_novedades.py) cada 2 días para la Línea de Tiempo.
+# Empresa | tipo | dirección | palabras para filtrar (opcional: solo cuentan las entradas cuyo título tiene alguna)
+# Tipos: wordpress (noticias o blog de un sitio WordPress), tvirtual (notas de versión de TVirtual),
+#        versiones (página que muestra "PRODUCTO 9.1": avisa cuando cambia una versión).
+TVirtual | tvirtual | https://tvirtual.net/api/actualizaciones.php
+Profit | wordpress | https://www.miprofit.com
+A2 | wordpress | https://a2.com.ve | versión, nueva, nuevo, lanza, lanzamiento, actualización, disponible, presenta
+Fina | wordpress | https://www.finapartner.com | versión, nueva, nuevo, lanza, lanzamiento, actualización, disponible, presenta
+Premium Soft | wordpress | https://premium-soft.com | versión, nueva, nuevo, lanza, lanzamiento, actualización, disponible, presenta
+Premium Soft | versiones | https://premium-soft.com/

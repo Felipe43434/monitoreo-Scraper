@@ -1199,11 +1199,35 @@ TIPOS_EVENTO = {
     'campana': {'nombre': 'Campaña grande', 'icono': 'bi-collection'},
     'promocion': {'nombre': 'Promoción', 'icono': 'bi-gift'},
     'precio': {'nombre': 'Cambio de precio', 'icono': 'bi-tags'},
+    'novedad': {'nombre': 'Nota de versión o anuncio oficial', 'icono': 'bi-newspaper'},
 }
 CAMPANA_GRANDE = 5  # variantes de un mismo anuncio
 DIAS_PAUSA_PRODUCTO = 60
 
-def linea_de_tiempo(anuncios, precios):
+def novedades_competencia(reglas_productos, companias_sel, productos_sel):
+    # Bot de novedades: notas de versión, anuncios oficiales y versiones nuevas de producto de los últimos 12 meses,
+    # con los mismos filtros de compañía y producto que el resto del panel.
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT compania, fecha, titulo, enlace, tipo FROM novedades
+                WHERE NOT inicial AND fecha >= CURRENT_DATE - INTERVAL '365 days' ORDER BY fecha DESC;
+            """)
+            filas = [dict(f) for f in cur.fetchall()]
+    except Exception as e:
+        print(f"Error leyendo las novedades de la competencia: {e}")
+        return []
+    finally:
+        conn.close()
+    for f in filas:
+        f['productos'] = clasificar_productos({'texto': f['titulo']}, reglas_productos)
+    return [f for f in filas if (not companias_sel or f['compania'] in companias_sel)
+            and (not productos_sel or coincide_producto(f['productos'], productos_sel))]
+
+def linea_de_tiempo(anuncios, precios, novedades=()):
     hoy = hoy_venezuela()
     inicio = lambda a: a_fecha(parse_date_str(a.get('fecha_display')))
     con_fecha = [a for a in anuncios if inicio(a) and (a.get('compania') or '').strip()]
@@ -1261,6 +1285,13 @@ def linea_de_tiempo(anuncios, precios):
                 verbo = {'sube': 'Subió', 'baja': 'Bajó'}.get(c['tipo'])
                 evento('precio', c['fecha'], c['compania'], (f"{verbo} en su web el precio de «{c['plan']}»: {c['texto']} ({c['cambio']})." if verbo
                                                               else f"En su web, «{c['plan']}»: {c['texto']}."), c['url'])
+    for n in novedades:
+        fecha = n['fecha'] if hasattr(n['fecha'], 'isoformat') else a_fecha(n['fecha'])
+        if n['tipo'] == 'version':
+            evento('version', fecha, n['compania'], f"En su web: {n['titulo']}.", n.get('enlace'))
+        else:
+            evento('novedad', fecha, n['compania'], ('Nota de versión: ' if n['tipo'] == 'nota' else 'Publicó: ') + n['titulo'].removeprefix('Nota de versión: '),
+                   n.get('enlace'), ', '.join(n.get('productos') or []))
     eventos.sort(key=lambda e: e['fecha'], reverse=True)
     companias = sorted({e['compania'] for e in eventos}, key=lambda c: (c != EMPRESA_PROPIA, c.lower()))
     tipos = {t: dict(d, total=sum(1 for e in eventos if e['tipo'] == t)) for t, d in TIPOS_EVENTO.items()}
@@ -4236,7 +4267,7 @@ HTML_TEMPLATE = """
                         <button type="button" class="btn btn-outline-secondary" data-meses="12">12 meses</button>
                     </div>
                 </div>
-                <p class="small text-muted mb-2">Lanzamientos, productos nuevos, regresos, campañas grandes, promociones, cambios de precio y versiones de la competencia (y de Gálac), con los filtros actuales. Clic en un punto para abrir el anuncio o la página.</p>
+                <p class="small text-muted mb-2">Lanzamientos, productos nuevos, regresos, campañas grandes, promociones, cambios de precio, versiones y notas de versión o anuncios oficiales de la competencia (y de Gálac), con los filtros actuales. Clic en un punto para abrir el anuncio o la página.</p>
                 <div class="d-flex flex-wrap gap-2 mb-3" id="lineaTipos">
                     {% for clave, t in linea.tipos.items() if t.total %}
                     <label class="chip-tipo"><input type="checkbox" class="form-check-input me-1" value="{{ clave }}" checked> <i class="bi {{ t.icono }}" aria-hidden="true"></i> {{ t.nombre }} <span class="text-muted">({{ t.total }})</span></label>
@@ -5439,7 +5470,7 @@ HTML_TEMPLATE = """
         const datos = {{ linea|tojson }};
         const estilos = {
             lanzamiento: ['#ea580c', 'triangle'], version: ['#7c3aed', 'star'], producto: ['#2563eb', 'circle'], vuelve: ['#0891b2', 'rect'],
-            campana: ['#64748b', 'rectRounded'], promocion: ['#db2777', 'crossRot'], precio: ['#16a34a', 'rectRot'],
+            campana: ['#64748b', 'dash'], promocion: ['#db2777', 'crossRot'], precio: ['#16a34a', 'rectRot'], novedad: ['#0d9488', 'rectRounded'],
         };
         const dia = 86400000;
         const hoy = Date.parse(datos.hoy);
@@ -5454,7 +5485,7 @@ HTML_TEMPLATE = """
             const eventos = visibles();
             const series = Object.keys(datos.tipos).filter(t => datos.tipos[t].total).map(t => ({
                 label: datos.tipos[t].nombre, tipo: t, data: eventos.filter(e => e.tipo === t).map(e => ({ x: Date.parse(e.fecha), y: e.compania, ev: e })),
-                pointStyle: estilos[t][1], backgroundColor: estilos[t][0] + 'cc', borderColor: estilos[t][0], pointRadius: 7, pointHoverRadius: 10,
+                pointStyle: estilos[t][1], backgroundColor: estilos[t][0] + 'cc', borderColor: estilos[t][0], pointRadius: 7, pointHoverRadius: 10, borderWidth: t === 'campana' ? 3 : 1,
             }));
             if (grafico) {
                 grafico.data.datasets = series;
@@ -6741,7 +6772,8 @@ def index():
         resumen['producto']['destacados'][1:1] = (resumen['producto']['precios']['web'] or {}).get('destacados', []) + resumen['producto']['precios']['destacados']
     linea = None
     if usuario_actual() in USUARIOS_LINEA_TIEMPO:
-        linea = linea_de_tiempo(anuncios, resumen['producto'].get('precios') if resumen else None)
+        linea = linea_de_tiempo(anuncios, resumen['producto'].get('precios') if resumen else None,
+                                novedades_competencia(reglas_productos, companias_sel, productos_sel))
 
     keywords_chart_data = {
         "labels": [p[0].capitalize() for p in top_palabras],

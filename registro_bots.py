@@ -87,6 +87,22 @@ def crear_tablas(cur):
         );
     """)
     cur.execute("ALTER TABLE precios_capturas ADD COLUMN IF NOT EXISTS version VARCHAR(40);")
+    # Bot de novedades: notas de versión, anuncios oficiales y versiones de producto de la competencia.
+    # "inicial" marca lo que ya estaba la primera vez que se revisó una página de versiones (no es un evento).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS novedades (
+            id SERIAL PRIMARY KEY,
+            compania VARCHAR(255) NOT NULL,
+            clave VARCHAR(255) NOT NULL,
+            fecha DATE NOT NULL,
+            titulo TEXT NOT NULL,
+            enlace TEXT,
+            tipo VARCHAR(20) NOT NULL,
+            inicial BOOLEAN DEFAULT FALSE,
+            guardada TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (compania, clave)
+        );
+    """)
 
 
 def descargar_miniatura(url, timeout=15):

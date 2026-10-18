@@ -1,4 +1,4 @@
-name: Ejecutar Bot de Precios
+name: Ejecutar Bots de Precios y Novedades
 
 on:
   workflow_dispatch:
@@ -29,3 +29,10 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python monitoreo_precios.py
+
+      # Corre aunque falle el paso de precios: son fuentes distintas.
+      - name: Revisar las novedades de la competencia (notas de versión, anuncios oficiales, versiones)
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python monitoreo_novedades.py
