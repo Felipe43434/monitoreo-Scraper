@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from flask import Flask, render_template_string, request, redirect, url_for, send_file, session, Response, abort
 from markupsafe import Markup
 import registro_bots
+from extraer_precios import precios_en_texto, formato_monto, PATRON_PRECIO, PATRON_MONTO_SOLO
 
 load_dotenv()
 
@@ -720,56 +721,75 @@ def categoria_formato(ad):
 # aparecen en el texto de los anuncios (en Google, también el leído con OCR). El historial sale de las
 # fechas de inicio de los anuncios: cada precio queda con el primer y el último día en que se vio.
 USUARIOS_PRECIOS = (USUARIO_BETA,)
-_MONTO = r'(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)'
-PATRON_PRECIO = re.compile(r'(?<![a-záéíóúñ])(US\$|USD|\$|Bs\.?(?:S\.)?|€|EUR)\s?' + _MONTO + r'(?!\s?%)|' + _MONTO +
-                           r'\s?(US\$|USD|\$|d[oó]lares|Bs\.?(?:S\.)?|bol[ií]vares|€|euros?)(?![a-záéíóúñ])', re.I)
-PATRON_DESCUENTO = re.compile(r'(\d{1,2})\s?%\s?(?:de\s)?(?:descuento|dcto|dto|off)\b|descuento\s(?:de(?:l)?\s)?(\d{1,2})\s?%', re.I)
-PATRON_PRUEBA = re.compile(r'(?:prueba|demo|pru[eé]ba(?:lo|la)?)\s+gratis(?:\s+(?:por|durante)\s+(\d{1,3})\s+d[ií]as)?|(\d{1,3})\s+d[ií]as\s+gratis', re.I)
-MONEDAS_PRECIO = {'us$': 'USD', 'usd': 'USD', '$': 'USD', 'dólares': 'USD', 'dolares': 'USD', '€': 'EUR', 'eur': 'EUR', 'euro': 'EUR', 'euros': 'EUR'}
 
-def a_monto(texto):
-    # "1.200,50", "1,200.50", "25,99" o "1.500": el último separador es decimal si le siguen 1 o 2 cifras.
-    t = texto.replace(' ', '')
-    decimal = re.search(r'[.,](\d{1,2})$', t)
-    if decimal:
-        return float(re.sub(r'[.,]', '', t[:decimal.start()]) + '.' + decimal.group(1))
-    return float(re.sub(r'[.,]', '', t))
-
-def formato_monto(moneda, monto):
-    numero = f"{monto:,.0f}" if monto == int(monto) else f"{monto:,.2f}"
-    return f"{moneda} {numero.replace(',', '#').replace('.', ',').replace('#', '.')}"
-
-def precios_en_texto(texto):
-    encontrados = []
-    for m in PATRON_PRECIO.finditer(texto):
-        simbolo = (m.group(1) or m.group(4) or '').lower().replace(' ', '')
-        moneda = 'Bs' if simbolo.startswith('b') else MONEDAS_PRECIO.get(simbolo, 'USD')
+def precios_web():
+    # Bot de precios (Beta): lo último que publica cada competidor en su página de precios y los cambios
+    # entre capturas. Un plan se reconoce por su nombre sin los montos, para ver "antes → ahora".
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT compania, url, revisado, estado, error FROM precios_paginas ORDER BY compania, url;")
+            paginas = [dict(p) for p in cur.fetchall()]
+            cur.execute("SELECT compania, url, fecha, texto, precios FROM precios_capturas WHERE fecha >= NOW() - INTERVAL '365 days' ORDER BY fecha;")
+            capturas = [dict(c) for c in cur.fetchall()]
+    except Exception as e:
+        print(f"Error leyendo los precios de los sitios web: {e}")
+        return None
+    finally:
+        conn.close()
+    if not paginas and not capturas:
+        return {'empresas': [], 'cambios': [], 'destacados': []}
+    local = lambda f: (f - timedelta(hours=4)) if f else None
+    fecha_txt = lambda f: local(f).strftime('%d/%m/%Y') if f else '—'
+    clave = lambda p: (' '.join(PATRON_MONTO_SOLO.sub('', PATRON_PRECIO.sub('', p.get('plan') or '')).split()).lower(), p.get('periodo'), p.get('moneda'))
+    por_url = {}
+    for c in capturas:
         try:
-            monto = a_monto(m.group(2) or m.group(3))
+            c['precios'] = json.loads(c['precios'] or '[]')
         except ValueError:
-            continue
-        if not 0 < monto < 10_000_000:
-            continue
-        despues = texto[m.end():m.end() + 30].lower()
-        periodo = 'al mes' if re.search(r'\b(mes|mensual)', despues) else 'al año' if re.search(r'\b(año|anual)', despues) else ''
-        unidad = next((f"por {u}" for u in ('usuario', 'empleado', 'trabajador', 'licencia', 'empresa') if re.search(rf'\bpor {u}', despues)), '')
-        encontrados.append({'tipo': 'precio', 'monto': monto, 'moneda': moneda, 'periodo': periodo, 'unidad': unidad,
-                            'etiqueta': ' '.join(x for x in (formato_monto(moneda, monto), periodo, unidad) if x), 'pos': m.start()})
-    for m in PATRON_DESCUENTO.finditer(texto):
-        encontrados.append({'tipo': 'descuento', 'etiqueta': f"{m.group(1) or m.group(2)} % de descuento", 'pos': m.start()})
-    for m in PATRON_PRUEBA.finditer(texto):
-        dias = m.group(1) or m.group(2)
-        encontrados.append({'tipo': 'prueba', 'etiqueta': f"Prueba gratis de {dias} días" if dias else 'Prueba gratis', 'pos': m.start()})
-    for p in encontrados:
-        # Fragmento del anuncio alrededor del dato, cortado en palabras completas.
-        inicio = max(0, p.pop('pos') - 40)
-        palabras = texto[inicio:inicio + 110].split()
-        if inicio > 0 and len(palabras) > 1 and not texto[inicio - 1].isspace():
-            palabras = palabras[1:]
-        if inicio + 110 < len(texto) and len(palabras) > 1:
-            palabras = palabras[:-1]
-        p['fragmento'] = ('…' if inicio > 0 else '') + ' '.join(palabras) + ('…' if inicio + 110 < len(texto) else '')
-    return encontrados
+            c['precios'] = []
+        por_url.setdefault((c['compania'], c['url']), []).append(c)
+
+    cambios = []
+    for (compania, url), lista in por_url.items():
+        for previa, actual in zip(lista, lista[1:]):
+            antes, ahora = {clave(p): p for p in previa['precios']}, {clave(p): p for p in actual['precios']}
+            encontrados = []
+            for k in antes.keys() & ahora.keys():
+                a, b = antes[k], ahora[k]
+                if a['monto'] != b['monto']:
+                    encontrados.append({'tipo': 'sube' if b['monto'] > a['monto'] else 'baja', 'plan': b.get('plan') or 'Precio',
+                                        'texto': f"{a['etiqueta']} → {b['etiqueta']}",
+                                        'cambio': f"{'+' if b['monto'] > a['monto'] else '−'}{round(abs(b['monto'] - a['monto']) * 100 / a['monto'])} %"})
+            encontrados += [{'tipo': 'nuevo', 'plan': ahora[k].get('plan') or 'Precio', 'texto': f"nuevo: {ahora[k]['etiqueta']}", 'cambio': ''}
+                            for k in ahora.keys() - antes.keys()]
+            encontrados += [{'tipo': 'quitado', 'plan': antes[k].get('plan') or 'Precio', 'texto': f"ya no aparece: {antes[k]['etiqueta']}", 'cambio': ''}
+                            for k in antes.keys() - ahora.keys()]
+            if not encontrados:
+                encontrados = [{'tipo': 'texto', 'plan': 'Página de precios', 'texto': 'cambió el texto, pero no los montos', 'cambio': ''}]
+            cambios += [dict(e, compania=compania, url=url, fecha=local(actual['fecha']).date(), visto=fecha_txt(actual['fecha'])) for e in encontrados]
+    cambios.sort(key=lambda c: c['fecha'], reverse=True)
+
+    empresas = {}
+    estado = {(p['compania'], p['url']): p for p in paginas}
+    for compania, url in sorted(set(estado) | set(por_url), key=lambda k: (k[0].lower(), k[1])):
+        e = empresas.setdefault(compania, {'compania': compania, 'url': url, 'precios': [], 'errores': [], 'revisado': None})
+        ultima = por_url.get((compania, url), [None])[-1]
+        if ultima:
+            e['precios'] += ultima['precios']
+        p = estado.get((compania, url), {})
+        if p.get('estado') == 'error':
+            e['errores'].append(p.get('error') or 'No se pudo leer la página.')
+        if p.get('revisado') and (not e['revisado'] or p['revisado'] < e['revisado']):
+            e['revisado'] = p['revisado']
+    for e in empresas.values():
+        e['revisado_txt'] = fecha_txt(e['revisado'])
+    hoy = hoy_venezuela()
+    destacados = [f"{c['compania']} {'subió' if c['tipo'] == 'sube' else 'bajó'} el precio de «{c['plan']}» en su web: {c['texto']} ({c['cambio']})."
+                  for c in cambios if c['tipo'] in ('sube', 'baja') and c['fecha'] >= hoy - timedelta(days=6)][:3]
+    return {'empresas': list(empresas.values()), 'cambios': cambios[:12], 'destacados': destacados}
 
 def precios_competencia(anuncios):
     hoy = hoy_venezuela()
@@ -2080,6 +2100,7 @@ HTML_TEMPLATE = """
         /* Precios de la competencia (Beta) */
         .tarjeta-precios .fila-propia td { background: rgba(37, 99, 235, .06); }
         .tarjeta-precios details summary { cursor: pointer; }
+        .tarjeta-precios .precio-web { border: 1px solid var(--border-color); border-radius: 12px; padding: .6rem .75rem; }
         /* Radar de producto (Beta) */
         .radar-producto { border-left: 4px solid var(--bs-primary); }
         .radar-subtitulo { font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--bs-secondary-color); margin-bottom: .6rem; }
@@ -3994,7 +4015,44 @@ HTML_TEMPLATE = """
                 <!-- Precios de la competencia (Beta): sacados del texto de los anuncios. -->
                 <div class="card-custom p-3 mt-3 tarjeta-precios">
                     <h6 class="fw-bold mb-1"><i class="bi bi-tags"></i> Precios de la competencia <span class="badge bg-warning text-dark">BETA</span></h6>
-                    <p class="small text-muted mb-3">Montos, descuentos y pruebas gratis que aparecen en el texto de los anuncios (todo el historial guardado, con los filtros actuales). Si un competidor no publica precios en sus anuncios, no aparece aquí.</p>
+                    {% set web = pc.web %}
+                    <p class="small text-muted mb-3">Precios de las páginas web de la competencia (las revisa el bot de precios cada 2 días) y montos, descuentos y pruebas gratis que aparecen en sus anuncios.</p>
+                    <div class="small fw-semibold text-muted mb-1">En sus sitios web</div>
+                    {% if web and web.empresas %}
+                    <div class="row g-2 mb-2">
+                        {% for e in web.empresas %}
+                        <div class="col-md-6 col-xxl-3">
+                            <div class="precio-web h-100">
+                                <div class="d-flex justify-content-between align-items-baseline gap-2 mb-1">
+                                    <span class="fw-semibold">{{ e.compania }}</span>
+                                    <a href="{{ e.url }}" target="_blank" rel="noopener" class="small text-decoration-none text-nowrap">Ver página</a>
+                                </div>
+                                <ul class="list-unstyled small mb-1">
+                                    {% for p in e.precios %}
+                                    <li><span class="text-muted">{{ p.plan or 'Precio' }}:</span> <span class="fw-semibold">{{ p.etiqueta }}</span></li>
+                                    {% else %}
+                                    <li class="text-muted">Todavía sin precios guardados.</li>
+                                    {% endfor %}
+                                </ul>
+                                <div class="small text-muted">Revisado el {{ e.revisado_txt }}</div>
+                                {% for err in e.errores %}<div class="small text-danger"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i> {{ err }}</div>{% endfor %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <div class="small fw-semibold text-muted mb-1 mt-3">Cambios en sus sitios web</div>
+                    <ul class="list-unstyled small d-flex flex-column gap-2 mb-4">
+                        {% for c in web.cambios %}
+                        <li><i class="bi {{ {'sube': 'bi-arrow-up-right text-danger', 'baja': 'bi-arrow-down-right text-success', 'nuevo': 'bi-plus-circle text-primary', 'quitado': 'bi-dash-circle text-muted'}.get(c.tipo, 'bi-pencil text-muted') }}" aria-hidden="true"></i>
+                            <span class="fw-semibold">{{ c.compania }}</span> · {{ c.plan }}: {{ c.texto }}{% if c.cambio %} <span class="fw-semibold">({{ c.cambio }})</span>{% endif %} <span class="text-muted">— {{ c.visto }}</span></li>
+                        {% else %}
+                        <li class="text-muted">Sin cambios desde la primera revisión. Cuando un competidor cambie un precio en su web, aparece aquí.</li>
+                        {% endfor %}
+                    </ul>
+                    {% else %}
+                    <p class="small text-muted mb-4">El bot de precios todavía no ha corrido. Revisa cada 2 días las páginas de precios de Fina, KRU Hr, TVirtual y A2 (lista en <code>precios.txt</code>).</p>
+                    {% endif %}
+                    <div class="small fw-semibold text-muted mb-1">En sus anuncios</div>
                     {% if pc.total %}
                     <div class="row g-4">
                         <div class="col-xl-7">
@@ -6420,7 +6478,8 @@ def index():
     resumen = resumen_semanal(anuncios, participacion_data['registros'], palabras_ignoradas)
     if usuario_actual() in USUARIOS_PRECIOS:
         resumen['producto']['precios'] = precios_competencia(anuncios)
-        resumen['producto']['destacados'][1:1] = resumen['producto']['precios']['destacados']
+        resumen['producto']['precios']['web'] = precios_web()
+        resumen['producto']['destacados'][1:1] = (resumen['producto']['precios']['web'] or {}).get('destacados', []) + resumen['producto']['precios']['destacados']
 
     keywords_chart_data = {
         "labels": [p[0].capitalize() for p in top_palabras],

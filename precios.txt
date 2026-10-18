@@ -1,0 +1,10 @@
+# Páginas de precios que revisa el bot de precios (monitoreo_precios.py) cada 2 días.
+# Empresa | página | texto donde empieza el bloque de precios | texto donde termina (o cuántas líneas tomar) | moneda de los montos sin símbolo (opcional)
+# Si la empresa cambia el diseño de su página y ya no aparece alguno de los textos, el panel lo avisa.
+Fina | https://www.finapartner.com/precios | Elige cada cuánto pagas | Oferta válida
+KRU Hr | https://kruhr.com/#precio | ¿Cuántos trabajadores tienes? | Empresas | USD
+TVirtual | https://tvirtual.net/index.php#pricing | Planes TVirtual | ¿Aún no sabes cuál plan escoger?
+A2 | https://a2.com.ve/producto/9-nomina/ | a2 Nómina | 4
+A2 | https://a2.com.ve/producto/8-contabilidad/ | a2 Contabilidad | 4
+A2 | https://a2.com.ve/producto/2-administrativo-basico-punto-de-venta/ | a2 Administrativo Básico | 4
+A2 | https://a2.com.ve/producto/a2-administrativo-contable/ | a2 Administrativo Contable | 4

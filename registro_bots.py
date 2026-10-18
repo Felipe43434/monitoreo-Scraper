@@ -64,6 +64,28 @@ def crear_tablas(cur):
             url_ejecucion TEXT
         );
     """)
+    # Bot de precios: estado de cada página de precios y una captura del bloque de precios cada vez que cambia.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS precios_paginas (
+            compania VARCHAR(255) NOT NULL,
+            url TEXT NOT NULL,
+            revisado TIMESTAMPTZ,
+            estado VARCHAR(20),
+            error TEXT,
+            PRIMARY KEY (compania, url)
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS precios_capturas (
+            id SERIAL PRIMARY KEY,
+            compania VARCHAR(255) NOT NULL,
+            url TEXT NOT NULL,
+            fecha TIMESTAMPTZ DEFAULT NOW(),
+            texto TEXT NOT NULL,
+            huella VARCHAR(32) NOT NULL,
+            precios TEXT
+        );
+    """)
 
 
 def descargar_miniatura(url, timeout=15):

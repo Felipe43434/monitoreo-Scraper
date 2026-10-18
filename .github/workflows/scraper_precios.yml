@@ -1,0 +1,31 @@
+name: Ejecutar Bot de Precios
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 30 minutos después de los scrapers de Meta y Google: 00:30 UTC cada 2 días
+    - cron: '30 0 */2 * *'
+
+jobs:
+  precios:
+    # Fijado a 24.04: ubuntu-latest pasa a Ubuntu 26 el 19-oct-2026 y Python 3.10 llega a fin de vida.
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Descargar código del repositorio
+        uses: actions/checkout@v7
+
+      - name: Configurar Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Revisar las páginas de precios de la competencia
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python monitoreo_precios.py
