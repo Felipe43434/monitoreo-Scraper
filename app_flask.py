@@ -12,6 +12,7 @@ from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode, urlparse, parse_qs, parse_qsl, quote
 from collections import Counter
+from statistics import median
 from functools import wraps
 import pandas as pd
 from dotenv import load_dotenv
@@ -953,20 +954,98 @@ def radar_producto(anuncios, producto, mercado_completo):
                              f"{round(abs(semanas[-1] - semanas[-2]) * 100 / semanas[-2])} % esta semana frente a la anterior.")
     if not any(t['icono'].startswith('bi-graph') for t in tendencias) and semanas[-1]:
         tendencia('bi-dash-lg', f"La publicidad de la competencia en {producto} se mantiene estable (unas {redondo(semanas[-1])} campañas activas en promedio esta semana).")
-    # Gálac frente a la competencia en las últimas 2 semanas (solo sin filtro de compañías: si no, no se ve todo el mercado).
-    reparto = reparto_participacion(registros, desde, hoy)
-    competidores = sorted((c for c in reparto if c != EMPRESA_PROPIA), key=lambda c: -reparto[c])
-    if mercado_completo and competidores and not reparto.get(EMPRESA_PROPIA):
-        tendencia('bi-exclamation-diamond', f"{EMPRESA_PROPIA} no tiene actividad en {producto}; {len(competidores)} competidor{'es' if len(competidores) != 1 else ''} "
-                                            f"sí: {', '.join(competidores[:4])}{'…' if len(competidores) > 4 else ''}.")
-    elif mercado_completo and reparto.get(EMPRESA_PROPIA):
-        ranking = sorted(reparto, key=lambda c: -reparto[c])
-        tendencia('bi-pie-chart', f"{EMPRESA_PROPIA} tiene el {redondo(reparto[EMPRESA_PROPIA])} % de la publicidad de {producto} "
-                                  f"(puesto {ranking.index(EMPRESA_PROPIA) + 1} de {len(ranking)}).")
-    if mercado_completo and competidores and reparto[competidores[0]] >= 30:
-        tendencia('bi-trophy', f"{competidores[0]} lidera {producto} con el {redondo(reparto[competidores[0]])} % de la publicidad de las últimas 2 semanas.")
+    # La presencia de Gálac solo se calcula sin filtro de compañías: si no, no se ve todo el mercado.
     return {'producto': producto, 'desde': desde.strftime('%d/%m'), 'hasta': hoy.strftime('%d/%m'),
-            'alertas': alertas[:MAXIMO_ALERTAS_RADAR], 'mas_alertas': max(0, len(alertas) - MAXIMO_ALERTAS_RADAR), 'tendencias': tendencias}
+            'alertas': alertas[:MAXIMO_ALERTAS_RADAR], 'mas_alertas': max(0, len(alertas) - MAXIMO_ALERTAS_RADAR), 'tendencias': tendencias,
+            'presencia': presencia_propia(del_producto, registros, producto) if mercado_completo else None}
+
+def presencia_propia(del_producto, registros, producto):
+    # "Presencia de Gálac" en el radar: su parte de la publicidad del producto (mismo cálculo que la
+    # Participación Publicitaria) en las últimas 4 semanas frente a las 4 anteriores, la evolución de
+    # 12 semanas, quién le gana terreno y una comparación con el líder.
+    hoy = hoy_venezuela()
+    ahora = reparto_participacion(registros, hoy - timedelta(days=27), hoy)
+    antes = reparto_participacion(registros, hoy - timedelta(days=55), hoy - timedelta(days=28))
+    if not ahora and not antes:
+        return None
+    pct = lambda x: f"{x:.1f}".replace('.', ',').removesuffix(',0') + ' %'
+    plural = lambda n, palabra: f"{n} {palabra}{'s' if n != 1 else ''}"
+    inicio = lambda a: a_fecha(parse_date_str(a.get('fecha_display')))
+    activo_en = lambda r, d, h: a_fecha(r['i']) <= h and (not r['f'] or a_fecha(r['f']) >= d)
+    propia_ahora, propia_antes = ahora.get(EMPRESA_PROPIA, 0), antes.get(EMPRESA_PROPIA, 0)
+    cambio = propia_ahora - propia_antes
+    cambios = {c: ahora.get(c, 0) - antes.get(c, 0) for c in set(ahora) | set(antes) if c != EMPRESA_PROPIA}
+    ranking = sorted(ahora, key=lambda c: -ahora[c])
+    puntos = lambda x: f"{'+' if x > 0 else '−'}{pct(abs(x))[:-2]} punto{'s' if round(abs(x), 1) != 1 else ''}"
+
+    if not propia_ahora and not propia_antes:
+        estado, titulo = 'ausente', f"{EMPRESA_PROPIA} no tiene presencia en {producto}."
+        texto = f"No tuvo publicidad de este producto en las últimas 8 semanas; {len(ranking)} competidor{'es' if len(ranking) != 1 else ''} sí."
+    elif cambio <= -3:
+        estado, titulo = 'pierde', f"{EMPRESA_PROPIA} está perdiendo presencia en {producto}:"
+        texto = f"pasó de {pct(propia_antes)} a {pct(propia_ahora)} de la publicidad (últimas 4 semanas frente a las 4 anteriores)."
+        ganador = max(cambios, key=cambios.get, default=None)
+        if ganador and cambios[ganador] > 0:
+            texto += f" Quien más ganó: {ganador} ({puntos(cambios[ganador])})."
+    elif cambio >= 3:
+        estado, titulo = 'gana', f"{EMPRESA_PROPIA} está ganando presencia en {producto}:"
+        texto = f"pasó de {pct(propia_antes)} a {pct(propia_ahora)} de la publicidad (últimas 4 semanas frente a las 4 anteriores)."
+        perdedor = min(cambios, key=cambios.get, default=None)
+        if perdedor and cambios[perdedor] < 0:
+            texto += f" Quien más perdió: {perdedor} ({puntos(cambios[perdedor])})."
+    else:
+        estado, titulo = 'estable', f"{EMPRESA_PROPIA} mantiene su presencia en {producto}:"
+        texto = f"{pct(propia_ahora)} de la publicidad en las últimas 4 semanas (antes, {pct(propia_antes)})."
+    if propia_ahora:
+        texto += f" Está en el puesto {ranking.index(EMPRESA_PROPIA) + 1} de {len(ranking)}."
+
+    # Evolución semanal: Gálac y los 3 competidores con más presencia en las 12 semanas.
+    semanas = [hoy - timedelta(days=7 * k) for k in range(11, -1, -1)]
+    repartos = [reparto_participacion(registros, fin - timedelta(days=6), fin) for fin in semanas]
+    total_12 = reparto_participacion(registros, hoy - timedelta(days=83), hoy)
+    empresas = [EMPRESA_PROPIA] + sorted((c for c in total_12 if c != EMPRESA_PROPIA), key=lambda c: -total_12[c])[:3]
+    grafico = {'etiquetas': [f.strftime('%d/%m') for f in semanas],
+               'series': [{'compania': c, 'propia': c == EMPRESA_PROPIA, 'datos': [r.get(c, 0) for r in repartos]} for c in empresas]}
+
+    por_compania = {}
+    for a in del_producto:
+        por_compania.setdefault((a.get('compania') or '').strip(), []).append(a)
+    def campanas_nuevas(c):
+        recientes = {a['campana']: a for a in por_compania.get(c, []) if inicio(a) and inicio(a) >= hoy - timedelta(days=27)}
+        return list(recientes.values())
+    def reparto_texto(valores):
+        conteo = Counter(valores)
+        total = sum(conteo.values())
+        return ' · '.join(f"{v} {round(n * 100 / total)} %" for v, n in conteo.most_common(2)) if total else '—'
+
+    # Competidores que más presencia ganaron y qué hicieron en esas 4 semanas.
+    ganadores = []
+    for c in sorted((c for c in cambios if cambios[c] >= 2), key=lambda c: -cambios[c])[:3]:
+        nuevas = campanas_nuevas(c)
+        formatos = Counter(map(categoria_formato, nuevas)).most_common(1)
+        detalle = (f"{plural(len(nuevas), 'campaña')} nueva{'s' if len(nuevas) != 1 else ''}"
+                   + (f", sobre todo en {formatos[0][0].lower()}" if formatos else '')) if nuevas else "sin campañas nuevas: sus anuncios siguieron activos más tiempo"
+        ganadores.append({'compania': c, 'cambio': puntos(cambios[c]), 'antes': pct(antes.get(c, 0)), 'ahora': pct(ahora.get(c, 0)), 'detalle': detalle})
+
+    # Gálac frente al líder (o frente al principal competidor si el líder es Gálac).
+    rival = next((c for c in ranking if c != EMPRESA_PROPIA), None)
+    comparacion = None
+    if rival:
+        def metricas(c):
+            activas = {r['g'] for r in registros if r['c'] == c and activo_en(r, hoy - timedelta(days=27), hoy)}
+            anuncios_activos = [a for a in por_compania.get(c, []) if a['campana'] in activas]
+            dias = [a.get('dias_activo') or 0 for a in por_compania.get(c, []) if a.get('dias_activo')]
+            return [pct(ahora.get(c, 0)),
+                    str(len({r['g'] for r in registros if r['c'] == c and activo_en(r, hoy - timedelta(days=6), hoy)})),
+                    str(len(campanas_nuevas(c))),
+                    reparto_texto(a.get('fuente') or 'Meta' for a in anuncios_activos),
+                    reparto_texto(map(categoria_formato, anuncios_activos)),
+                    f"{round(median(dias))} días" if dias else '—']
+        nombres = ['Presencia (4 semanas)', 'Campañas activas (últimos 7 días)', 'Campañas nuevas (4 semanas)',
+                   'Canales', 'Formatos', 'Duración típica de un anuncio']
+        comparacion = {'rival': rival, 'etiqueta': 'Principal competidor' if ranking[0] == EMPRESA_PROPIA else 'Líder',
+                       'filas': list(zip(nombres, metricas(EMPRESA_PROPIA), metricas(rival)))}
+    return {'estado': estado, 'titulo': titulo, 'texto': texto, 'grafico': grafico, 'ganadores': ganadores, 'comparacion': comparacion}
 
 def estadisticas_por_empresa(anuncios):
     # Tabla "Empresas Monitoreadas": se cuenta sobre los anuncios ya filtrados para que
@@ -1911,9 +1990,16 @@ HTML_TEMPLATE = """
             .radar-lista li:nth-child(4) { animation-delay: 570ms; }
             .radar-lista li:nth-child(5) { animation-delay: 620ms; }
             .radar-lista li:nth-child(n+6) { animation-delay: 670ms; }
+            .radar-veredicto { animation: entrar-suave .45s var(--ease-out) 700ms backwards; }
+            .radar-presencia .radar-lista li { animation-delay: 850ms; }
+            .radar-presencia .radar-lista li:nth-child(2) { animation-delay: 900ms; }
+            .radar-presencia .radar-lista li:nth-child(n+3) { animation-delay: 950ms; }
+            .tabla-presencia tbody tr { animation: entrar-suave .35s var(--ease-out) 900ms backwards; }
             .radar-lista .radar-version > .bi, .radar-lista .radar-nuevo > .bi { display: inline-block; animation: icono-latido .5s ease-in-out 1s 2; }
             #datosNuevos.d-flex { animation: aviso-entrar .5s var(--ease-out) backwards, aviso-latido 1.6s ease-out .5s 2; }
         }
+        .tabla-presencia th, .tabla-presencia td { background: transparent; }
+        .tabla-presencia thead th { font-weight: 700; border-bottom-width: 1px; }
         /* Estado de los bots y vistas guardadas (Beta) */
         .estado-bots { font-size: .75rem; }
         .estado-bot { display: inline-flex; align-items: center; gap: .3rem; padding: .2rem .55rem; border-radius: 999px;
@@ -2942,6 +3028,50 @@ HTML_TEMPLATE = """
                 </ul>
             </div>
         </div>
+        {% if r.presencia %}{% set pr = r.presencia %}
+        {% set estilo_veredicto = {'pierde': ('bg-danger-subtle text-danger-emphasis', 'bi-arrow-down-right-circle-fill'), 'gana': ('bg-success-subtle text-success-emphasis', 'bi-arrow-up-right-circle-fill'),
+                                   'estable': ('bg-primary-subtle text-primary-emphasis', 'bi-dash-circle-fill'), 'ausente': ('bg-warning-subtle text-warning-emphasis', 'bi-exclamation-triangle-fill')} %}
+        <div class="radar-presencia mt-4 pt-3 border-top">
+            <h3 class="radar-subtitulo">Presencia de Gálac en {{ r.producto }}</h3>
+            <div class="radar-veredicto d-flex gap-2 align-items-start rounded-3 p-3 mb-3 {{ estilo_veredicto[pr.estado][0] }}">
+                <i class="bi {{ estilo_veredicto[pr.estado][1] }} fs-5 lh-1" aria-hidden="true"></i>
+                <div><strong>{{ pr.titulo }}</strong> {{ pr.texto }}</div>
+            </div>
+            <div class="row g-4">
+                <div class="col-xl-7">
+                    <div class="small fw-semibold text-muted mb-1">Parte de la publicidad de {{ r.producto }} por semana</div>
+                    <div class="position-relative" style="height: 300px;">
+                        <canvas class="grafico-presencia" data-serie="{{ pr.grafico|tojson|forceescape }}" role="img" aria-label="Evolución semanal de la presencia en {{ r.producto }}: {{ pr.grafico.series|map(attribute='compania')|join(', ') }}"></canvas>
+                    </div>
+                </div>
+                <div class="col-xl-5">
+                    {% if pr.ganadores %}
+                    <div class="small fw-semibold text-muted mb-1">Quién ganó presencia</div>
+                    <ul class="list-unstyled radar-lista mb-3">
+                        {% for g in pr.ganadores %}
+                        <li class="radar-sube"><i class="bi bi-graph-up-arrow" aria-hidden="true"></i>
+                            <span><a class="fw-semibold text-decoration-none" href="{{ url_con_filtros(compania=g.compania, pestana='tab-ads') }}">{{ g.compania }}</a> {{ g.cambio }} ({{ g.antes }} → {{ g.ahora }}): {{ g.detalle }}.</span></li>
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
+                    {% if pr.comparacion %}
+                    <div class="table-responsive">
+                        <table class="table table-sm small mb-0 tabla-presencia">
+                            <caption class="visually-hidden">Gálac frente a {{ pr.comparacion.rival }} en {{ r.producto }}</caption>
+                            <thead><tr><th scope="col"></th><th scope="col" class="text-primary">Gálac</th><th scope="col">{{ pr.comparacion.etiqueta }}: {{ pr.comparacion.rival }}</th></tr></thead>
+                            <tbody>
+                                {% for nombre, propio, rival in pr.comparacion.filas %}
+                                <tr><th scope="row" class="fw-normal text-muted">{{ nombre }}</th><td class="fw-semibold">{{ propio }}</td><td>{{ rival }}</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            <p class="small text-muted mt-3 mb-0"><i class="bi bi-info-circle" aria-hidden="true"></i> La presencia cuenta los días que cada campaña estuvo activa (más peso para video y varias plataformas). Mide presencia publicitaria, no gasto ni alcance: Meta y Google no publican esos datos para anuncios comerciales en Venezuela.</p>
+        </div>
+        {% endif %}
     </section>
     {% endfor %}
     {% endif %}
@@ -4896,6 +5026,32 @@ HTML_TEMPLATE = """
         dibujar();
 
     })();
+
+    // Presencia de Gálac en el radar de producto (Beta): Gálac con línea gruesa frente a sus 3 competidores.
+    document.querySelectorAll('.grafico-presencia').forEach(lienzo => {
+        const { etiquetas, series } = JSON.parse(lienzo.dataset.serie);
+        const colores = ['#f59e0b', '#ef4444', '#10b981'];
+        let i = 0;
+        new Chart(lienzo, {
+            type: 'line',
+            data: {
+                labels: etiquetas,
+                datasets: series.map(s => {
+                    const color = s.propia ? '#2563eb' : colores[i++ % colores.length];
+                    return { label: s.compania, data: s.datos, cubicInterpolationMode: 'monotone', borderColor: color, backgroundColor: color,
+                             borderWidth: s.propia ? 3.5 : 1.75, pointRadius: s.propia ? 3 : 2, order: s.propia ? 0 : 1 };
+                }),
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+                scales: { y: { beginAtZero: true, suggestedMax: 50, ticks: { callback: v => v + ' %' } } },
+                plugins: {
+                    legend: { position: 'bottom', labels: { boxWidth: 10, padding: 8 } },
+                    tooltip: { callbacks: { title: c => 'Semana al ' + c[0].label, label: c => `${c.dataset.label}: ${c.parsed.y.toLocaleString('es-VE')} %` } },
+                },
+            },
+        });
+    });
 
     // Evolución en el tiempo: la tarjeta de "Anuncios activos" también muestra la participación semanal,
     // que se elige con un selector; el gráfico se crea al mostrarlo por primera vez (oculto mediría 0 px).
