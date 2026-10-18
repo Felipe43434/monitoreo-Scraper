@@ -910,7 +910,7 @@ def ejecutar():
     inicializar_bd()
     bloqueadas = obtener_companias_bloqueadas()
 
-    dias = 30
+    dias = 7  # por defecto, la última semana (igual que el workflow y el panel)
     if len(sys.argv) > 1:
         dias = None if sys.argv[1] == "todo" else int(sys.argv[1])
 

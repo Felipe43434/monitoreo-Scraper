@@ -2053,9 +2053,9 @@ HTML_TEMPLATE = """
             <div class="sync-container d-flex flex-column gap-1 ms-1">
                 <form action="/lanzar_scraper" method="POST" id="scraperForm" onsubmit="startInlineScraping(event)" class="d-flex align-items-center gap-2 m-0">
                     <select name="dias_scraping" id="selectDiasScraping" aria-label="Días a revisar al sincronizar" class="form-select form-select-sm bg-dark text-light border-secondary" style="width: 100px;">
-                        <option value="7">7 días</option>
+                        <option value="7" selected>7 días</option>
                         <option value="15">15 días</option>
-                        <option value="30" selected>30 días</option>
+                        <option value="30">30 días</option>
                         <option value="60">60 días</option>
                     </select>
                     <button type="submit" id="btnSyncScraper" class="btn btn-sm btn-primary text-nowrap d-flex align-items-center gap-1">
@@ -4098,7 +4098,7 @@ HTML_TEMPLATE = """
         wrapper.classList.remove('d-none');
         localStorage.removeItem('todos_anuncios_vistos');
 
-        const dias = parseInt(select.value) || 30;
+        const dias = parseInt(select.value) || 7;
         let totalSeconds = dias <= 7 ? 12 : (dias <= 15 ? 18 : (dias <= 30 ? 25 : 35));
         let remainingSeconds = totalSeconds;
         let elapsed = 0;
@@ -6627,7 +6627,7 @@ def desbloquear_compania():
 @app.route('/lanzar_scraper', methods=['POST'])
 @login_required
 def lanzar_scraper():
-    dias = request.form.get("dias_scraping", "30")
+    dias = request.form.get("dias_scraping", "7")
 
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return redirect(url_for('index', msg="❌ Falta configurar GITHUB_TOKEN o GITHUB_REPO en Render."))
